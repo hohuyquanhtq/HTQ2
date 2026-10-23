@@ -11,10 +11,12 @@ import { DEFAULT_SAMPLE_EXAM } from './utils/sampleExamData';
 import Header, { ActiveTab } from './components/Header';
 import QuestionBankView from './components/QuestionBankView';
 import WordImportView from './components/WordImportView';
+import QuickExamBuilderView from './components/QuickExamBuilderView';
 import ExamMatrixView from './components/ExamMatrixView';
 import OnlineExamView from './components/OnlineExamView';
 import ExamResultView from './components/ExamResultView';
 import DataManagementView from './components/DataManagementView';
+import { KeyRound, X, AlertCircle, ArrowRight } from 'lucide-react';
 
 export function App() {
   const [questions, setQuestions] = useState<Question[]>([]);
@@ -25,13 +27,69 @@ export function App() {
   const [currentExam, setCurrentExam] = useState<Exam | null>(null);
   const [currentResult, setCurrentResult] = useState<ExamResult | null>(null);
 
-  // Initialize data on mount
+  // PIN modal & joining state
+  const [isPinModalOpen, setIsPinModalOpen] = useState(false);
+  const [enteredPin, setEnteredPin] = useState('');
+  const [pinError, setPinError] = useState<string | null>(null);
+
+  // Initialize data and check URL parameters on mount
   useEffect(() => {
     const loadedQuestions = loadQuestions();
     const loadedExams = loadExams();
     setQuestions(loadedQuestions);
     setExams(loadedExams);
+
+    // Auto load exam if query parameters exist in URL (?exam=id or ?pin=code)
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const examId = params.get('exam');
+      const pin = params.get('pin');
+
+      if (examId) {
+        const found = loadedExams.find((e) => e.id === examId) || 
+                      (DEFAULT_SAMPLE_EXAM.id === examId ? DEFAULT_SAMPLE_EXAM : null);
+        if (found) {
+          setCurrentExam(found);
+          setCurrentResult(null);
+          setActiveTab('exam');
+        }
+      } else if (pin) {
+        const cleanPin = pin.trim();
+        const found = loadedExams.find((e) => e.pinCode === cleanPin) || 
+                      (DEFAULT_SAMPLE_EXAM.pinCode === cleanPin ? DEFAULT_SAMPLE_EXAM : null);
+        if (found) {
+          setCurrentExam(found);
+          setCurrentResult(null);
+          setActiveTab('exam');
+        }
+      }
+    } catch (err) {
+      console.error('Lỗi khi đọc tham số URL:', err);
+    }
   }, []);
+
+  // Join exam by PIN
+  const handleJoinByPin = (pinCode: string) => {
+    const cleanPin = pinCode.trim();
+    if (!cleanPin) {
+      setPinError('Vui lòng nhập mã PIN');
+      return;
+    }
+
+    const found = exams.find((e) => e.pinCode === cleanPin || e.id === cleanPin) ||
+                  (DEFAULT_SAMPLE_EXAM.pinCode === cleanPin || DEFAULT_SAMPLE_EXAM.id === cleanPin ? DEFAULT_SAMPLE_EXAM : null);
+
+    if (found) {
+      setPinError(null);
+      setIsPinModalOpen(false);
+      setEnteredPin('');
+      setCurrentExam(found);
+      setCurrentResult(null);
+      setActiveTab('exam');
+    } else {
+      setPinError(`Không tìm thấy phòng thi với mã PIN "${cleanPin}". Vui lòng kiểm tra lại.`);
+    }
+  };
 
   // Question bank handlers
   const handleSaveQuestion = (updated: Question) => {
@@ -90,6 +148,45 @@ export function App() {
     setActiveTab('bank');
   };
 
+  // Quick Exam created from Word import
+  const handleCreateQuickExam = (exam: Exam, newQuestions: Question[]) => {
+    // 1. Commit questions to bank
+    setQuestions((prev) => {
+      const existingIds = new Set(prev.map((q) => q.id));
+      const filteredNew = newQuestions.filter((q) => !existingIds.has(q.id));
+      const next = [...prev, ...filteredNew];
+      saveQuestions(next);
+      return next;
+    });
+
+    // 2. Save exam to exam list
+    setExams((prev) => {
+      const next = [exam, ...prev.filter((e) => e.id !== exam.id)];
+      saveExams(next);
+      return next;
+    });
+  };
+
+  // Quick exam builder published handler
+  const handlePublishQuickExam = (exam: Exam, snapshotQuestions: Question[]) => {
+    // 1. Commit questions to bank if not already present
+    setQuestions((prev) => {
+      const existingIds = new Set(prev.map((q) => q.id));
+      const filteredNew = snapshotQuestions.filter((q) => !existingIds.has(q.id));
+      if (filteredNew.length === 0) return prev;
+      const next = [...prev, ...filteredNew];
+      saveQuestions(next);
+      return next;
+    });
+
+    // 2. Save exam to exam list
+    setExams((prev) => {
+      const next = [exam, ...prev.filter((e) => e.id !== exam.id)];
+      saveExams(next);
+      return next;
+    });
+  };
+
   // Exam handlers
   const handleSaveExam = (exam: Exam) => {
     setExams((prev) => {
@@ -114,8 +211,7 @@ export function App() {
   };
 
   const handleQuickExam = () => {
-    const examToRun = exams[0] || DEFAULT_SAMPLE_EXAM;
-    handleStartExam(examToRun);
+    setActiveTab('quick-exam');
   };
 
   // Exam finished handler
@@ -142,14 +238,25 @@ export function App() {
         activeTab={activeTab}
         onTabChange={(tab) => {
           setActiveTab(tab);
-          // If navigating away from result, keep state or reset if desired
         }}
         questionCount={questions.length}
         onStartQuickExam={handleQuickExam}
+        onOpenPinModal={() => {
+          setPinError(null);
+          setIsPinModalOpen(true);
+        }}
       />
 
       {/* Main Content Area */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        {/* TAB 0: TẠO ĐỀ ONLINE NHANH TỪ WORD */}
+        {activeTab === 'quick-exam' && (
+          <QuickExamBuilderView
+            onPublishExam={handlePublishQuickExam}
+            onStartExamDirectly={handleStartExam}
+          />
+        )}
+
         {/* TAB 1: QUESTION BANK */}
         {activeTab === 'bank' && (
           <QuestionBankView
@@ -162,7 +269,11 @@ export function App() {
 
         {/* TAB 2: WORD IMPORT */}
         {activeTab === 'import' && (
-          <WordImportView onCommitQuestions={handleCommitImport} />
+          <WordImportView 
+            onCommitQuestions={handleCommitImport} 
+            onCreateQuickExam={handleCreateQuickExam}
+            onStartExamDirectly={handleStartExam}
+          />
         )}
 
         {/* TAB 3: MATRIX GENERATOR */}
@@ -193,24 +304,78 @@ export function App() {
                 onExitExam={() => setActiveTab('matrix')}
               />
             ) : (
-              <div className="bg-white rounded-2xl border border-slate-200 p-12 text-center max-w-md mx-auto space-y-4">
-                <h3 className="text-base font-bold text-slate-900">Chưa chọn đề thi nào</h3>
-                <p className="text-xs text-slate-500 leading-relaxed">
-                  Vui lòng chọn hoặc sinh một đề thi trong mục &quot;Sinh đề ma trận&quot;, hoặc bấm nút &quot;Thi ngay mẫu Hóa 11&quot;.
-                </p>
-                <div className="flex items-center justify-center gap-3 pt-2">
-                  <button
-                    onClick={() => setActiveTab('matrix')}
-                    className="px-4 py-2 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors cursor-pointer"
-                  >
-                    Đến mục Sinh đề
-                  </button>
-                  <button
-                    onClick={handleQuickExam}
-                    className="px-5 py-2 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-xl shadow-sm transition-colors cursor-pointer"
-                  >
-                    Thi đề mẫu Hóa 11
-                  </button>
+              <div className="bg-white rounded-2xl border border-slate-200 p-8 sm:p-12 text-center max-w-lg mx-auto space-y-6 shadow-xs">
+                <div className="w-14 h-14 bg-indigo-50 text-indigo-600 rounded-2xl flex items-center justify-center mx-auto">
+                  <KeyRound className="w-7 h-7" />
+                </div>
+
+                <div className="space-y-2">
+                  <h3 className="text-lg font-bold text-slate-900">Vào phòng thi trực tuyến</h3>
+                  <p className="text-xs text-slate-500 leading-relaxed">
+                    Nhập mã PIN 6 chữ số do giáo viên cung cấp để vào làm bài, hoặc chọn đề mẫu có sẵn.
+                  </p>
+                </div>
+
+                {/* Inline PIN Form */}
+                <form 
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    handleJoinByPin(enteredPin);
+                  }}
+                  className="space-y-3 max-w-xs mx-auto"
+                >
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      maxLength={10}
+                      value={enteredPin}
+                      onChange={(e) => {
+                        setEnteredPin(e.target.value);
+                        setPinError(null);
+                      }}
+                      placeholder="Nhập mã PIN (vd: 839201)"
+                      className="flex-1 px-4 py-2.5 text-center text-sm font-mono font-bold tracking-widest bg-slate-50 border border-slate-300 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    />
+                    <button
+                      type="submit"
+                      className="px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl transition-colors cursor-pointer shrink-0"
+                    >
+                      Vào thi
+                    </button>
+                  </div>
+
+                  {pinError && (
+                    <div className="p-2.5 bg-rose-50 border border-rose-200 rounded-lg text-rose-700 text-xs flex items-center gap-1.5 text-left">
+                      <AlertCircle className="w-4 h-4 shrink-0" />
+                      <span>{pinError}</span>
+                    </div>
+                  )}
+                </form>
+
+                <div className="border-t border-slate-100 pt-5 space-y-3">
+                  <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
+                    Hoặc chọn nhanh
+                  </div>
+                  <div className="flex flex-wrap items-center justify-center gap-2.5">
+                    <button
+                      onClick={() => handleJoinByPin('839201')}
+                      className="px-3.5 py-1.5 text-xs font-semibold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 rounded-lg border border-indigo-200 transition-colors cursor-pointer"
+                    >
+                      Mã mẫu: 839201 (Hóa 11)
+                    </button>
+                    <button
+                      onClick={() => setActiveTab('import')}
+                      className="px-3.5 py-1.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors cursor-pointer"
+                    >
+                      Tạo đề từ Word
+                    </button>
+                    <button
+                      onClick={() => setActiveTab('matrix')}
+                      className="px-3.5 py-1.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors cursor-pointer"
+                    >
+                      Sinh đề ma trận
+                    </button>
+                  </div>
                 </div>
               </div>
             )}
@@ -226,6 +391,85 @@ export function App() {
           />
         )}
       </main>
+
+      {/* PIN Entry Modal */}
+      {isPinModalOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-sm w-full p-6 shadow-2xl border border-slate-200 space-y-5 animate-in fade-in zoom-in duration-200">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-lg bg-indigo-50 flex items-center justify-center text-indigo-600">
+                  <KeyRound className="w-4 h-4" />
+                </div>
+                <h3 className="text-sm font-bold text-slate-900">Nhập mã PIN phòng thi</h3>
+              </div>
+              <button
+                onClick={() => {
+                  setIsPinModalOpen(false);
+                  setPinError(null);
+                }}
+                className="text-slate-400 hover:text-slate-600 p-1 rounded-md"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-500 leading-relaxed">
+              Nhập mã PIN gồm 6 số do thầy/cô cung cấp để truy cập trực tiếp vào phòng thi.
+            </p>
+
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                handleJoinByPin(enteredPin);
+              }}
+              className="space-y-4"
+            >
+              <div>
+                <input
+                  type="text"
+                  maxLength={10}
+                  autoFocus
+                  value={enteredPin}
+                  onChange={(e) => {
+                    setEnteredPin(e.target.value);
+                    setPinError(null);
+                  }}
+                  placeholder="Ví dụ: 839201"
+                  className="w-full px-4 py-3 text-center text-lg font-mono font-bold tracking-widest bg-slate-50 border border-slate-300 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 text-slate-800"
+                />
+              </div>
+
+              {pinError && (
+                <div className="p-2.5 bg-rose-50 border border-rose-200 rounded-lg text-rose-700 text-xs flex items-center gap-1.5">
+                  <AlertCircle className="w-4 h-4 shrink-0" />
+                  <span>{pinError}</span>
+                </div>
+              )}
+
+              <div className="flex items-center gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEnteredPin('839201');
+                    handleJoinByPin('839201');
+                  }}
+                  className="px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-100 rounded-xl transition-colors cursor-pointer"
+                >
+                  Dùng mã mẫu (839201)
+                </button>
+
+                <button
+                  type="submit"
+                  className="flex-1 py-2.5 px-4 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl shadow-sm transition-colors cursor-pointer"
+                >
+                  Vào làm bài
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* Footer */}
       <footer className="mt-auto border-t border-slate-200 bg-white py-6">

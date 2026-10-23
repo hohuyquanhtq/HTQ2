@@ -21,7 +21,13 @@ export interface Question {
   subject: string;
   grade: number;
   chapter: string;
+  lesson?: string;
   topic?: string;
+  subjectId?: string;
+  gradeId?: string;
+  chapterId?: string;
+  lessonId?: string;
+  topicId?: string;
   part: PartType;
   type: QuestionType;
   level: CognitiveLevel;
@@ -72,6 +78,7 @@ export interface Exam {
   grade: number;
   durationMinutes: number;
   passcode?: string;
+  pinCode?: string; // 6-digit access code, e.g. "839201"
   minScoreForExplanation: number;
   partPoints: {
     PART_I: number;

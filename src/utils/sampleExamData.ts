@@ -304,6 +304,7 @@ export const DEFAULT_SAMPLE_EXAM: Exam = {
   subject: 'Hóa học',
   grade: 11,
   durationMinutes: 50,
+  pinCode: '839201',
   minScoreForExplanation: 5.0,
   partPoints: {
     PART_I: 4.0,

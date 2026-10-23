@@ -20,8 +20,15 @@ import {
   Filter, 
   ChevronDown, 
   ChevronUp,
-  X
+  X,
+  FolderTree,
+  Tag
 } from 'lucide-react';
+import { 
+  AVAILABLE_SUBJECTS, 
+  AVAILABLE_GRADES, 
+  CURRICULUM_DATA 
+} from '../utils/curriculumData';
 
 interface QuestionBankViewProps {
   questions: Question[];
@@ -37,9 +44,13 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
   onDuplicateQuestion
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
+  const [selectedSubject, setSelectedSubject] = useState<'ALL' | string>('ALL');
+  const [selectedGrade, setSelectedGrade] = useState<'ALL' | number>('ALL');
+  const [selectedChapter, setSelectedChapter] = useState<'ALL' | string>('ALL');
+  const [selectedLesson, setSelectedLesson] = useState<'ALL' | string>('ALL');
+  const [selectedTopic, setSelectedTopic] = useState<'ALL' | string>('ALL');
   const [selectedPart, setSelectedPart] = useState<'ALL' | PartType>('ALL');
   const [selectedLevel, setSelectedLevel] = useState<'ALL' | CognitiveLevel>('ALL');
-  const [selectedChapter, setSelectedChapter] = useState<'ALL' | string>('ALL');
   const [selectedStatus, setSelectedStatus] = useState<'ALL' | 'VERIFIED' | 'UNVERIFIED'>('ALL');
 
   // Modal state
@@ -50,14 +61,50 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
   // Expanded explanations
   const [expandedExpl, setExpandedExpl] = useState<Record<string, boolean>>({});
 
-  // Available chapters
-  const chapters = useMemo(() => {
-    const set = new Set<string>();
+  // Dynamic available subjects in questions bank
+  const subjects = useMemo(() => {
+    const set = new Set<string>(AVAILABLE_SUBJECTS);
     questions.forEach((q) => {
-      if (q.chapter) set.add(q.chapter);
+      if (q.subject) set.add(q.subject);
     });
     return Array.from(set);
   }, [questions]);
+
+  // Available chapters based on filter
+  const chapters = useMemo(() => {
+    const set = new Set<string>();
+    questions.forEach((q) => {
+      if (selectedSubject !== 'ALL' && q.subject && q.subject !== selectedSubject) return;
+      if (selectedGrade !== 'ALL' && q.grade && q.grade !== selectedGrade) return;
+      if (q.chapter) set.add(q.chapter);
+    });
+    return Array.from(set);
+  }, [questions, selectedSubject, selectedGrade]);
+
+  // Available lessons based on filter
+  const lessons = useMemo(() => {
+    const set = new Set<string>();
+    questions.forEach((q) => {
+      if (selectedSubject !== 'ALL' && q.subject && q.subject !== selectedSubject) return;
+      if (selectedGrade !== 'ALL' && q.grade && q.grade !== selectedGrade) return;
+      if (selectedChapter !== 'ALL' && q.chapter && q.chapter !== selectedChapter) return;
+      if (q.lesson) set.add(q.lesson);
+    });
+    return Array.from(set);
+  }, [questions, selectedSubject, selectedGrade, selectedChapter]);
+
+  // Available topics based on filter
+  const topics = useMemo(() => {
+    const set = new Set<string>();
+    questions.forEach((q) => {
+      if (selectedSubject !== 'ALL' && q.subject && q.subject !== selectedSubject) return;
+      if (selectedGrade !== 'ALL' && q.grade && q.grade !== selectedGrade) return;
+      if (selectedChapter !== 'ALL' && q.chapter && q.chapter !== selectedChapter) return;
+      if (selectedLesson !== 'ALL' && q.lesson && q.lesson !== selectedLesson) return;
+      if (q.topic) set.add(q.topic);
+    });
+    return Array.from(set);
+  }, [questions, selectedSubject, selectedGrade, selectedChapter, selectedLesson]);
 
   // Statistics
   const stats = useMemo(() => {
@@ -80,9 +127,13 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
   // Filtered list
   const filteredQuestions = useMemo(() => {
     return questions.filter((q) => {
+      if (selectedSubject !== 'ALL' && q.subject && q.subject !== selectedSubject) return false;
+      if (selectedGrade !== 'ALL' && q.grade && q.grade !== selectedGrade) return false;
+      if (selectedChapter !== 'ALL' && q.chapter && q.chapter !== selectedChapter) return false;
+      if (selectedLesson !== 'ALL' && q.lesson && q.lesson !== selectedLesson) return false;
+      if (selectedTopic !== 'ALL' && q.topic && q.topic !== selectedTopic) return false;
       if (selectedPart !== 'ALL' && q.part !== selectedPart) return false;
       if (selectedLevel !== 'ALL' && q.level !== selectedLevel) return false;
-      if (selectedChapter !== 'ALL' && q.chapter !== selectedChapter) return false;
       if (selectedStatus === 'VERIFIED' && !q.isVerified) return false;
       if (selectedStatus === 'UNVERIFIED' && q.isVerified) return false;
 
@@ -91,20 +142,23 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
         const contentMatch = q.content.toLowerCase().includes(term);
         const explMatch = q.explanation?.toLowerCase().includes(term);
         const chapterMatch = q.chapter?.toLowerCase().includes(term);
-        return contentMatch || explMatch || chapterMatch;
+        const lessonMatch = q.lesson?.toLowerCase().includes(term);
+        const topicMatch = q.topic?.toLowerCase().includes(term);
+        return contentMatch || explMatch || chapterMatch || lessonMatch || topicMatch;
       }
 
       return true;
     });
-  }, [questions, selectedPart, selectedLevel, selectedChapter, selectedStatus, searchTerm]);
+  }, [questions, selectedSubject, selectedGrade, selectedChapter, selectedLesson, selectedTopic, selectedPart, selectedLevel, selectedStatus, searchTerm]);
 
   // Start creating new question
   const handleAddNew = (part: PartType = 'PART_I') => {
     const newQ: Question = {
       id: `q-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
-      subject: 'Hóa học',
-      grade: 11,
+      subject: selectedSubject !== 'ALL' ? selectedSubject : 'Hóa học',
+      grade: selectedGrade !== 'ALL' ? selectedGrade : 11,
       chapter: chapters[0] || 'Cân bằng hóa học',
+      lesson: lessons[0] || 'Khái niệm về cân bằng hóa học',
       part,
       type: part === 'PART_I' ? 'MULTIPLE_CHOICE' : part === 'PART_II' ? 'TRUE_FALSE' : 'SHORT_ANSWER',
       level: 'THONG_HIEU',
@@ -252,62 +306,143 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
           />
         </div>
 
-        {/* Filters */}
+        {/* Filters in exact requested order */}
         <div className="flex flex-wrap items-center gap-2">
-          {/* Part Filter */}
+          {/* 1. Môn học */}
           <select
-            value={selectedPart}
-            onChange={(e) => setSelectedPart(e.target.value as any)}
-            className="px-3 py-2 text-xs font-medium bg-slate-50 border border-slate-200 rounded-lg text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+            value={selectedSubject}
+            onChange={(e) => {
+              setSelectedSubject(e.target.value);
+              setSelectedChapter('ALL');
+              setSelectedLesson('ALL');
+              setSelectedTopic('ALL');
+            }}
+            className="px-2.5 py-1.5 text-xs font-semibold bg-slate-50 border border-slate-200 rounded-lg text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
           >
-            <option value="ALL">Tất cả phần</option>
-            <option value="PART_I">Phần I (Trắc nghiệm 4 lựa chọn)</option>
-            <option value="PART_II">Phần II (Đúng / Sai)</option>
-            <option value="PART_III">Phần III (Trả lời ngắn)</option>
+            <option value="ALL">1. Mọi môn học</option>
+            {subjects.map((s) => (
+              <option key={s} value={s}>{s}</option>
+            ))}
           </select>
 
-          {/* Level Filter */}
+          {/* 2. Khối lớp (Lớp 6 đến Lớp 12) */}
           <select
-            value={selectedLevel}
-            onChange={(e) => setSelectedLevel(e.target.value as any)}
-            className="px-3 py-2 text-xs font-medium bg-slate-50 border border-slate-200 rounded-lg text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+            value={selectedGrade}
+            onChange={(e) => {
+              const val = e.target.value === 'ALL' ? 'ALL' : Number(e.target.value);
+              setSelectedGrade(val as any);
+              setSelectedChapter('ALL');
+              setSelectedLesson('ALL');
+              setSelectedTopic('ALL');
+            }}
+            className="px-2.5 py-1.5 text-xs font-semibold bg-slate-50 border border-slate-200 rounded-lg text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
           >
-            <option value="ALL">Mọi mức độ</option>
-            <option value="NHAN_BIET">Nhận biết</option>
-            <option value="THONG_HIEU">Thông hiểu</option>
-            <option value="VAN_DUNG">Vận dụng</option>
-            <option value="VAN_DUNG_CAO">Vận dụng cao</option>
+            <option value="ALL">2. Mọi khối lớp (6-12)</option>
+            {AVAILABLE_GRADES.map((g) => (
+              <option key={g} value={g}>Lớp {g}</option>
+            ))}
           </select>
 
-          {/* Chapter Filter */}
+          {/* 3. Chương / Chủ đề lớn */}
           {chapters.length > 0 && (
             <select
               value={selectedChapter}
-              onChange={(e) => setSelectedChapter(e.target.value)}
-              className="px-3 py-2 text-xs font-medium bg-slate-50 border border-slate-200 rounded-lg text-slate-700 max-w-[160px] truncate focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+              onChange={(e) => {
+                setSelectedChapter(e.target.value);
+                setSelectedLesson('ALL');
+                setSelectedTopic('ALL');
+              }}
+              className="px-2.5 py-1.5 text-xs font-medium bg-slate-50 border border-slate-200 rounded-lg text-slate-700 max-w-[140px] truncate focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
             >
-              <option value="ALL">Mọi chương/chủ đề</option>
+              <option value="ALL">3. Mọi chương</option>
               {chapters.map((ch) => (
                 <option key={ch} value={ch}>{ch}</option>
               ))}
             </select>
           )}
 
+          {/* 4. Bài học */}
+          {lessons.length > 0 && (
+            <select
+              value={selectedLesson}
+              onChange={(e) => {
+                setSelectedLesson(e.target.value);
+                setSelectedTopic('ALL');
+              }}
+              className="px-2.5 py-1.5 text-xs font-medium bg-slate-50 border border-slate-200 rounded-lg text-slate-700 max-w-[140px] truncate focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+            >
+              <option value="ALL">4. Mọi bài học</option>
+              {lessons.map((ls) => (
+                <option key={ls} value={ls}>{ls}</option>
+              ))}
+            </select>
+          )}
+
+          {/* 5. Chủ đề */}
+          {topics.length > 0 && (
+            <select
+              value={selectedTopic}
+              onChange={(e) => setSelectedTopic(e.target.value)}
+              className="px-2.5 py-1.5 text-xs font-medium bg-slate-50 border border-slate-200 rounded-lg text-slate-700 max-w-[130px] truncate focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+            >
+              <option value="ALL">5. Mọi chủ đề</option>
+              {topics.map((tp) => (
+                <option key={tp} value={tp}>{tp}</option>
+              ))}
+            </select>
+          )}
+
+          {/* 6. Loại câu hỏi (Phần thi) */}
+          <select
+            value={selectedPart}
+            onChange={(e) => setSelectedPart(e.target.value as any)}
+            className="px-2.5 py-1.5 text-xs font-medium bg-slate-50 border border-slate-200 rounded-lg text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+          >
+            <option value="ALL">6. Mọi phần thi</option>
+            <option value="PART_I">Phần I (4 lựa chọn)</option>
+            <option value="PART_II">Phần II (Đúng/Sai)</option>
+            <option value="PART_III">Phần III (Trả lời ngắn)</option>
+          </select>
+
+          {/* 7. Mức độ nhận thức */}
+          <select
+            value={selectedLevel}
+            onChange={(e) => setSelectedLevel(e.target.value as any)}
+            className="px-2.5 py-1.5 text-xs font-medium bg-slate-50 border border-slate-200 rounded-lg text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+          >
+            <option value="ALL">7. Mọi mức độ</option>
+            <option value="NHAN_BIET">Nhận biết</option>
+            <option value="THONG_HIEU">Thông hiểu</option>
+            <option value="VAN_DUNG">Vận dụng</option>
+            <option value="VAN_DUNG_CAO">Vận dụng cao</option>
+          </select>
+
+          {/* 8. Trạng thái xác nhận */}
+          <select
+            value={selectedStatus}
+            onChange={(e) => setSelectedStatus(e.target.value as any)}
+            className="px-2.5 py-1.5 text-xs font-medium bg-slate-50 border border-slate-200 rounded-lg text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+          >
+            <option value="ALL">Tất cả trạng thái</option>
+            <option value="VERIFIED">Đã xác nhận</option>
+            <option value="UNVERIFIED">Cần xem xét</option>
+          </select>
+
           {/* Verification Status */}
           <select
             value={selectedStatus}
             onChange={(e) => setSelectedStatus(e.target.value as any)}
-            className="px-3 py-2 text-xs font-medium bg-slate-50 border border-slate-200 rounded-lg text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+            className="px-2.5 py-1.5 text-xs font-medium bg-slate-50 border border-slate-200 rounded-lg text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
           >
             <option value="ALL">Tất cả trạng thái</option>
             <option value="VERIFIED">Đã xác nhận</option>
-            <option value="UNVERIFIED">Cần xem xét / Thiếu đáp án</option>
+            <option value="UNVERIFIED">Cần xem xét</option>
           </select>
 
           {/* Add Question Button */}
           <button
             onClick={() => handleAddNew('PART_I')}
-            className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg transition-colors shadow-sm whitespace-nowrap"
+            className="flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg transition-colors shadow-sm whitespace-nowrap cursor-pointer"
           >
             <Plus className="w-3.5 h-3.5" />
             <span>Thêm câu hỏi</span>
@@ -345,19 +480,29 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
                       Câu {idx + 1}
                     </span>
 
-                    {/* Metadata as clean text with separators (Zero-Pill Discipline) */}
-                    <div className="flex items-center gap-2 text-xs text-slate-500">
-                      <span className="font-medium text-indigo-700">
-                        {q.part === 'PART_I' ? 'Phần I (4 Lựa chọn)' : q.part === 'PART_II' ? 'Phần II (Đúng/Sai)' : 'Phần III (Trả lời ngắn)'}
+                    {/* Folder Path & Cognitive Level Metadata */}
+                    <div className="flex flex-wrap items-center gap-1.5 text-xs text-slate-500">
+                      <span className="font-semibold text-slate-800">
+                        {q.subject || 'Hóa học'} · Lớp {q.grade || 11}
                       </span>
                       <span aria-hidden="true">·</span>
-                      <span className="font-semibold text-slate-800">
+                      <span className="font-medium text-indigo-700">
+                        {q.part === 'PART_I' ? 'Phần I' : q.part === 'PART_II' ? 'Phần II' : 'Phần III'}
+                      </span>
+                      <span aria-hidden="true">·</span>
+                      <span className="font-bold text-emerald-800 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">
                         {q.customLevelTag || `[${COGNITIVE_LEVEL_LABELS[q.level].toUpperCase()}]`}
                       </span>
                       {q.chapter && (
                         <>
                           <span aria-hidden="true">·</span>
-                          <span className="text-slate-600">{q.chapter}</span>
+                          <span className="text-slate-700 font-medium" title="Chương">{q.chapter}</span>
+                        </>
+                      )}
+                      {q.lesson && (
+                        <>
+                          <span aria-hidden="true">·</span>
+                          <span className="text-slate-500 italic" title="Bài học">{q.lesson}</span>
                         </>
                       )}
                     </div>
@@ -597,10 +742,36 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
             </div>
 
             <form onSubmit={handleModalSave} className="space-y-4 pt-4">
-              {/* Type, Part & Level Row */}
+              {/* Row 1: Subject, Grade, Part */}
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
-                  <label className="block text-xs font-medium text-slate-700 mb-1">Phần thi / Cấu trúc</label>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">Môn học</label>
+                  <select
+                    value={editingQuestion.subject || 'Hóa học'}
+                    onChange={(e) => setEditingQuestion({ ...editingQuestion, subject: e.target.value })}
+                    className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-lg text-slate-800"
+                  >
+                    {AVAILABLE_SUBJECTS.map((s) => (
+                      <option key={s} value={s}>{s}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">Khối lớp (6 - 12)</label>
+                  <select
+                    value={editingQuestion.grade || 11}
+                    onChange={(e) => setEditingQuestion({ ...editingQuestion, grade: Number(e.target.value) })}
+                    className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-lg text-slate-800"
+                  >
+                    {AVAILABLE_GRADES.map((g) => (
+                      <option key={g} value={g}>Lớp {g}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">Cấu trúc phần thi</label>
                   <select
                     value={editingQuestion.part}
                     onChange={(e) => {
@@ -632,7 +803,10 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
                     <option value="PART_III">Phần III (Trả lời ngắn)</option>
                   </select>
                 </div>
+              </div>
 
+              {/* Row 2: Level, Custom Tag, Chapter, Lesson */}
+              <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
                 <div>
                   <label className="block text-xs font-medium text-slate-700 mb-1">Mức độ nhận thức</label>
                   <select
@@ -648,13 +822,35 @@ export const QuestionBankView: React.FC<QuestionBankViewProps> = ({
                 </div>
 
                 <div>
-                  <label className="block text-xs font-medium text-slate-700 mb-1">Chương / Chủ đề</label>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">Tag mức độ mở rộng</label>
+                  <input
+                    type="text"
+                    value={editingQuestion.customLevelTag || ''}
+                    onChange={(e) => setEditingQuestion({ ...editingQuestion, customLevelTag: e.target.value })}
+                    className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-lg text-slate-800"
+                    placeholder="VD: [HIỂU – VẬN DỤNG]"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">Chương / Chuyên đề</label>
                   <input
                     type="text"
                     value={editingQuestion.chapter}
                     onChange={(e) => setEditingQuestion({ ...editingQuestion, chapter: e.target.value })}
                     className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-lg text-slate-800"
                     placeholder="VD: Cân bằng hóa học"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">Bài học cụ thể</label>
+                  <input
+                    type="text"
+                    value={editingQuestion.lesson || ''}
+                    onChange={(e) => setEditingQuestion({ ...editingQuestion, lesson: e.target.value })}
+                    className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-lg text-slate-800"
+                    placeholder="VD: Khái niệm cân bằng"
                   />
                 </div>
               </div>
