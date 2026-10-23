@@ -1,12 +1,14 @@
 import React, { useState, useEffect } from 'react';
-import { Question, Exam, ExamResult } from './types';
+import { Question, Exam, ExamResult, UserSession } from './types';
 import { 
   loadQuestions, 
   saveQuestions, 
   loadExams, 
   saveExams, 
+  loadResults,
   saveResult 
 } from './utils/storage';
+import { getCurrentSession, clearCurrentSession, ensureDefaultAccounts } from './utils/auth';
 import { DEFAULT_SAMPLE_EXAM } from './utils/sampleExamData';
 import Header, { ActiveTab } from './components/Header';
 import QuestionBankView from './components/QuestionBankView';
@@ -16,12 +18,20 @@ import ExamMatrixView from './components/ExamMatrixView';
 import OnlineExamView from './components/OnlineExamView';
 import ExamResultView from './components/ExamResultView';
 import DataManagementView from './components/DataManagementView';
-import { KeyRound, X, AlertCircle, ArrowRight } from 'lucide-react';
+import AuthModal from './components/AuthModal';
+import UserProfileModal from './components/UserProfileModal';
+import { KeyRound, X, AlertCircle, ArrowRight, GraduationCap } from 'lucide-react';
 
 export function App() {
   const [questions, setQuestions] = useState<Question[]>([]);
   const [exams, setExams] = useState<Exam[]>([]);
+  const [examResults, setExamResults] = useState<ExamResult[]>([]);
   const [activeTab, setActiveTab] = useState<ActiveTab>('bank');
+
+  // User Authentication & Session
+  const [currentUser, setCurrentUser] = useState<UserSession | null>(() => getCurrentSession());
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+  const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
 
   // Examination flow states
   const [currentExam, setCurrentExam] = useState<Exam | null>(null);
@@ -34,10 +44,23 @@ export function App() {
 
   // Initialize data and check URL parameters on mount
   useEffect(() => {
+    // Seed default accounts
+    ensureDefaultAccounts();
+
     const loadedQuestions = loadQuestions();
     const loadedExams = loadExams();
+    const loadedResults = loadResults();
     setQuestions(loadedQuestions);
     setExams(loadedExams);
+    setExamResults(loadedResults);
+
+    // If no user is logged in, show auth modal so they declare role/profile
+    const session = getCurrentSession();
+    if (!session) {
+      setIsAuthModalOpen(true);
+    } else {
+      setCurrentUser(session);
+    }
 
     // Auto load exam if query parameters exist in URL (?exam=id or ?pin=code)
     try {
@@ -67,6 +90,23 @@ export function App() {
       console.error('Lỗi khi đọc tham số URL:', err);
     }
   }, []);
+
+  // Auth Handlers
+  const handleAuthSuccess = (session: UserSession) => {
+    setCurrentUser(session);
+    setIsAuthModalOpen(false);
+  };
+
+  const handleLogout = () => {
+    clearCurrentSession();
+    setCurrentUser(null);
+    setIsProfileModalOpen(false);
+    setIsAuthModalOpen(true);
+  };
+
+  const handleUpdateUser = (updated: UserSession) => {
+    setCurrentUser(updated);
+  };
 
   // Join exam by PIN
   const handleJoinByPin = (pinCode: string) => {
@@ -217,6 +257,7 @@ export function App() {
   // Exam finished handler
   const handleFinishExam = (result: ExamResult) => {
     saveResult(result);
+    setExamResults(loadResults());
     setCurrentResult(result);
   };
 
@@ -245,10 +286,36 @@ export function App() {
           setPinError(null);
           setIsPinModalOpen(true);
         }}
+        currentUser={currentUser}
+        onOpenProfile={() => setIsProfileModalOpen(true)}
+        onOpenAuth={() => setIsAuthModalOpen(true)}
       />
 
       {/* Main Content Area */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        {/* Student Mode Notice */}
+        {currentUser?.role === 'STUDENT' && (activeTab === 'bank' || activeTab === 'import' || activeTab === 'matrix') && (
+          <div className="mb-6 p-4 bg-emerald-50/90 border border-emerald-200 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-4 text-xs">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-xl bg-emerald-600 text-white flex items-center justify-center shrink-0">
+                <GraduationCap className="w-5 h-5" />
+              </div>
+              <div>
+                <span className="font-bold text-emerald-950">Chế độ Học sinh ({currentUser.fullName}{currentUser.className ? ` - ${currentUser.className}` : ''})</span>
+                <p className="text-emerald-700 mt-0.5">
+                  Bạn có thể tham khảo ngân hàng câu hỏi và tham gia làm bài thi online. Quyền chỉnh sửa ngân hàng đề và sửa đáp án chuẩn dành riêng cho tài khoản Giáo viên.
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={() => setActiveTab('exam')}
+              className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl whitespace-nowrap shadow-xs cursor-pointer self-start sm:self-center"
+            >
+              Vào phòng thi ngay
+            </button>
+          </div>
+        )}
+
         {/* TAB 0: TẠO ĐỀ ONLINE NHANH TỪ WORD */}
         {activeTab === 'quick-exam' && (
           <QuickExamBuilderView
@@ -300,6 +367,7 @@ export function App() {
             ) : currentExam ? (
               <OnlineExamView
                 exam={currentExam}
+                currentUser={currentUser}
                 onFinishExam={handleFinishExam}
                 onExitExam={() => setActiveTab('matrix')}
               />
@@ -469,6 +537,26 @@ export function App() {
             </form>
           </div>
         </div>
+      )}
+
+      {/* Authentication Modal (Login & Register) */}
+      <AuthModal
+        isOpen={isAuthModalOpen}
+        onSuccess={handleAuthSuccess}
+        onClose={() => setIsAuthModalOpen(false)}
+        forced={!currentUser}
+      />
+
+      {/* User Profile & Password Modal */}
+      {currentUser && (
+        <UserProfileModal
+          isOpen={isProfileModalOpen}
+          user={currentUser}
+          examResults={examResults}
+          onClose={() => setIsProfileModalOpen(false)}
+          onUpdateUser={handleUpdateUser}
+          onLogout={handleLogout}
+        />
       )}
 
       {/* Footer */}

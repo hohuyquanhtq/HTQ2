@@ -1,5 +1,5 @@
 import React, { useState, useRef, useMemo, useEffect } from 'react';
-import { Question, PartType, CognitiveLevel, COGNITIVE_LEVEL_LABELS, Exam } from '../types';
+import { Question, PartType, CognitiveLevel, COGNITIVE_LEVEL_LABELS, Exam, MultipleChoiceOption, TrueFalseItem } from '../types';
 import { parseDocxFile, ParseResult } from '../utils/docxParser';
 import { SAMPLE_CHEMISTRY_QUESTIONS } from '../utils/sampleExamData';
 import { 
@@ -126,6 +126,63 @@ export const WordImportView: React.FC<WordImportViewProps> = ({
 
   // Expanded explanations
   const [expandedExpl, setExpandedExpl] = useState<Record<string, boolean>>({});
+
+  // Single Question Editing Modal State
+  const [editingQuestion, setEditingQuestion] = useState<Question | null>(null);
+
+  const handleSaveEditedQuestion = (updated: Question) => {
+    if (!parseResult) return;
+    // Clear validation warnings if verified
+    const nextQ: Question = {
+      ...updated,
+      validationWarnings: (updated.validationWarnings || []).filter(
+        (w) => !w.includes('Chưa xác định') && !w.includes('Chưa xác nhận')
+      )
+    };
+    if (nextQ.part === 'PART_I' && nextQ.correctOption && nextQ.options && nextQ.options.length === 4) {
+      nextQ.isVerified = true;
+    } else if (nextQ.part === 'PART_II' && nextQ.items && nextQ.items.length === 4 && nextQ.items.every((it) => it.correctAnswer !== null)) {
+      nextQ.isVerified = true;
+    } else if (nextQ.part === 'PART_III' && nextQ.shortAnswer) {
+      nextQ.isVerified = true;
+    }
+
+    const nextQuestions = parseResult.questions.map((q) => (q.id === nextQ.id ? nextQ : q));
+    const p1Count = nextQuestions.filter((q) => q.part === 'PART_I').length;
+    const p2Count = nextQuestions.filter((q) => q.part === 'PART_II').length;
+    const p3Count = nextQuestions.filter((q) => q.part === 'PART_III').length;
+
+    setParseResult({
+      ...parseResult,
+      questions: nextQuestions,
+      partsFound: {
+        ...parseResult.partsFound,
+        part1: p1Count,
+        part2: p2Count,
+        part3: p3Count
+      }
+    });
+    setEditingQuestion(null);
+  };
+
+  const handleDeleteParsedQuestion = (qId: string) => {
+    if (!parseResult) return;
+    const nextQuestions = parseResult.questions.filter((q) => q.id !== qId);
+    const p1Count = nextQuestions.filter((q) => q.part === 'PART_I').length;
+    const p2Count = nextQuestions.filter((q) => q.part === 'PART_II').length;
+    const p3Count = nextQuestions.filter((q) => q.part === 'PART_III').length;
+
+    setParseResult({
+      ...parseResult,
+      questions: nextQuestions,
+      partsFound: {
+        ...parseResult.partsFound,
+        part1: p1Count,
+        part2: p2Count,
+        part3: p3Count
+      }
+    });
+  };
 
   // Computed available chapters based on current subject & grade
   const availableChapters = useMemo(() => {
@@ -998,8 +1055,18 @@ export const WordImportView: React.FC<WordImportViewProps> = ({
                     <div className="flex items-center gap-3">
                       <span className="text-xs font-bold text-slate-900">Câu {idx + 1}</span>
                       <div className="flex items-center gap-2 text-xs text-slate-500">
-                        <span className="font-semibold text-indigo-700">
-                          {q.part === 'PART_I' ? 'Phần I (4 Lựa chọn)' : q.part === 'PART_II' ? 'Phần II (Đúng/Sai)' : 'Phần III (Trả lời ngắn)'}
+                        <span className={`px-2 py-0.5 rounded-md font-bold text-[11px] border ${
+                          q.part === 'PART_I'
+                            ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
+                            : q.part === 'PART_II'
+                            ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                            : 'bg-amber-50 text-amber-700 border-amber-200'
+                        }`}>
+                          {q.part === 'PART_I'
+                            ? 'Dạng 1: Trắc nghiệm 4 lựa chọn (Phần I)'
+                            : q.part === 'PART_II'
+                            ? 'Dạng 2: Đúng / Sai 4 phát biểu (Phần II)'
+                            : 'Dạng 3: Trả lời ngắn (Phần III)'}
                         </span>
                         <span aria-hidden="true">·</span>
                         <span className="font-bold text-emerald-800 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">
@@ -1012,12 +1079,55 @@ export const WordImportView: React.FC<WordImportViewProps> = ({
                       </div>
                     </div>
 
-                    {!q.isVerified && (
-                      <span className="text-xs text-amber-700 font-semibold flex items-center gap-1">
-                        <AlertTriangle className="w-3.5 h-3.5" />
-                        Chưa xác nhận đáp án
-                      </span>
-                    )}
+                    <div className="flex items-center gap-2">
+                      {/* Warning badges */}
+                      {q.validationWarnings && q.validationWarnings.length > 0 && (
+                        <div className="flex flex-wrap gap-1">
+                          {q.validationWarnings.map((warn, wIdx) => {
+                            const isAmbiguous = warn.includes('Chưa xác định');
+                            return (
+                              <span
+                                key={wIdx}
+                                className={`text-[11px] font-semibold px-2 py-0.5 rounded flex items-center gap-1 border ${
+                                  isAmbiguous
+                                    ? 'bg-rose-50 text-rose-700 border-rose-300'
+                                    : 'bg-amber-50 text-amber-700 border-amber-300'
+                                }`}
+                              >
+                                <AlertTriangle className="w-3 h-3 shrink-0" />
+                                <span>{warn}</span>
+                              </span>
+                            );
+                          })}
+                        </div>
+                      )}
+
+                      {!q.isVerified && (!q.validationWarnings || q.validationWarnings.length === 0) && (
+                        <span className="text-xs text-amber-700 font-semibold flex items-center gap-1">
+                          <AlertTriangle className="w-3.5 h-3.5" />
+                          Chưa xác nhận đáp án
+                        </span>
+                      )}
+
+                      {/* Action buttons */}
+                      <button
+                        type="button"
+                        onClick={() => setEditingQuestion(JSON.parse(JSON.stringify(q)))}
+                        className="p-1.5 text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors cursor-pointer"
+                        title="Chỉnh sửa câu hỏi, đổi dạng & đáp án"
+                      >
+                        <Edit3 className="w-4 h-4" />
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteParsedQuestion(q.id)}
+                        className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
+                        title="Xóa câu hỏi khỏi đề"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
                   </div>
 
                   {/* Mode B: Per-Question Category Selector Strip */}
@@ -1424,6 +1534,228 @@ export const WordImportView: React.FC<WordImportViewProps> = ({
                 className="w-full py-1.5 text-xs text-slate-600 hover:bg-slate-100 rounded-lg"
               >
                 Đóng
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* MODAL: Chỉnh sửa câu hỏi, đổi dạng & sửa đáp án */}
+      {editingQuestion && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4 overflow-y-auto">
+          <div className="bg-white rounded-2xl max-w-3xl w-full my-8 p-6 shadow-2xl border border-slate-200 max-h-[90vh] overflow-y-auto space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-200 pb-3">
+              <div>
+                <h3 className="text-base font-bold text-slate-900">
+                  Chỉnh sửa câu hỏi & Đổi dạng (Dạng 1 ↔ Dạng 2 ↔ Dạng 3)
+                </h3>
+                <p className="text-xs text-slate-500">
+                  Tùy chỉnh dạng câu hỏi, sửa câu dẫn, phương án / phát biểu và cập nhật đáp án chuẩn.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditingQuestion(null)}
+                className="text-slate-400 hover:text-slate-600 p-1 rounded-md"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Type & Cognitive Level */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">Dạng câu hỏi</label>
+                <select
+                  value={editingQuestion.part}
+                  onChange={(e) => {
+                    const part = e.target.value as PartType;
+                    setEditingQuestion({
+                      ...editingQuestion,
+                      part,
+                      type: part === 'PART_I' ? 'MULTIPLE_CHOICE' : part === 'PART_II' ? 'TRUE_FALSE' : 'SHORT_ANSWER',
+                      options: part === 'PART_I' ? (editingQuestion.options && editingQuestion.options.length === 4 ? editingQuestion.options : [
+                        { label: 'A', content: editingQuestion.options?.[0]?.content || '' },
+                        { label: 'B', content: editingQuestion.options?.[1]?.content || '' },
+                        { label: 'C', content: editingQuestion.options?.[2]?.content || '' },
+                        { label: 'D', content: editingQuestion.options?.[3]?.content || '' }
+                      ]) : undefined,
+                      correctOption: part === 'PART_I' ? (editingQuestion.correctOption || 'A') : undefined,
+                      items: part === 'PART_II' ? (editingQuestion.items && editingQuestion.items.length === 4 ? editingQuestion.items : [
+                        { label: 'a', content: editingQuestion.items?.[0]?.content || '', correctAnswer: 'D' },
+                        { label: 'b', content: editingQuestion.items?.[1]?.content || '', correctAnswer: 'S' },
+                        { label: 'c', content: editingQuestion.items?.[2]?.content || '', correctAnswer: 'D' },
+                        { label: 'd', content: editingQuestion.items?.[3]?.content || '', correctAnswer: 'S' }
+                      ]) : undefined,
+                      shortAnswer: part === 'PART_III' ? (editingQuestion.shortAnswer || '') : undefined
+                    });
+                  }}
+                  className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-lg font-semibold text-slate-800"
+                >
+                  <option value="PART_I">Dạng 1: Trắc nghiệm 4 lựa chọn A, B, C, D</option>
+                  <option value="PART_II">Dạng 2: Đúng / Sai 4 ý a, b, c, d</option>
+                  <option value="PART_III">Dạng 3: Trả lời ngắn</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">Mức độ nhận thức</label>
+                <select
+                  value={editingQuestion.level}
+                  onChange={(e) => setEditingQuestion({ ...editingQuestion, level: e.target.value as CognitiveLevel })}
+                  className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-lg text-slate-800"
+                >
+                  <option value="NHAN_BIET">Nhận biết</option>
+                  <option value="THONG_HIEU">Thông hiểu</option>
+                  <option value="VAN_DUNG">Vận dụng</option>
+                  <option value="VAN_DUNG_CAO">Vận dụng cao</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">Tag mức độ mở rộng</label>
+                <input
+                  type="text"
+                  value={editingQuestion.customLevelTag || ''}
+                  onChange={(e) => setEditingQuestion({ ...editingQuestion, customLevelTag: e.target.value })}
+                  placeholder="VD: [HIỂU – VẬN DỤNG]"
+                  className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-lg"
+                />
+              </div>
+            </div>
+
+            {/* Question Prompt */}
+            <div>
+              <label className="block text-xs font-bold text-slate-700 mb-1">Câu dẫn / Đề bài (Hỗ trợ LaTeX $...$ & HTML)</label>
+              <textarea
+                rows={3}
+                value={editingQuestion.content}
+                onChange={(e) => setEditingQuestion({ ...editingQuestion, content: e.target.value })}
+                className="w-full p-3 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 font-mono"
+              />
+            </div>
+
+            {/* DẠNG 1: 4 Options Editing */}
+            {editingQuestion.part === 'PART_I' && editingQuestion.options && (
+              <div className="space-y-2">
+                <label className="block text-xs font-bold text-slate-700">4 Phương án & Chọn đáp án đúng</label>
+                {editingQuestion.options.map((opt, oIdx) => (
+                  <div key={opt.label} className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setEditingQuestion({ ...editingQuestion, correctOption: opt.label, isVerified: true })}
+                      className={`w-8 h-8 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                        editingQuestion.correctOption === opt.label
+                          ? 'bg-emerald-600 text-white shadow-xs'
+                          : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                      }`}
+                      title={`Bấm để chọn ${opt.label} làm đáp án đúng`}
+                    >
+                      {opt.label}
+                    </button>
+                    <input
+                      type="text"
+                      value={opt.content}
+                      onChange={(e) => {
+                        const nextOpts = [...(editingQuestion.options || [])];
+                        nextOpts[oIdx].content = e.target.value;
+                        setEditingQuestion({ ...editingQuestion, options: nextOpts });
+                      }}
+                      className="flex-1 px-3 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-lg"
+                    />
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* DẠNG 2: True/False Sub-Items Editing */}
+            {editingQuestion.part === 'PART_II' && editingQuestion.items && (
+              <div className="space-y-2">
+                <label className="block text-xs font-bold text-slate-700">4 Ý a), b), c), d) & Chọn Đúng / Sai</label>
+                {editingQuestion.items.map((item, iIdx) => (
+                  <div key={item.label} className="flex items-center gap-2">
+                    <span className="font-bold text-xs text-slate-900 w-5 text-center">{item.label})</span>
+                    <input
+                      type="text"
+                      value={item.content}
+                      onChange={(e) => {
+                        const nextItems = [...(editingQuestion.items || [])];
+                        nextItems[iIdx].content = e.target.value;
+                        setEditingQuestion({ ...editingQuestion, items: nextItems });
+                      }}
+                      className="flex-1 px-3 py-1.5 text-xs bg-slate-50 border border-slate-200 rounded-lg"
+                    />
+                    <div className="flex gap-1 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const nextItems = [...(editingQuestion.items || [])];
+                          nextItems[iIdx].correctAnswer = 'D';
+                          setEditingQuestion({ ...editingQuestion, items: nextItems, isVerified: true });
+                        }}
+                        className={`px-3 py-1 text-xs font-bold rounded-lg cursor-pointer ${
+                          item.correctAnswer === 'D' ? 'bg-emerald-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                        }`}
+                      >
+                        Đúng (Đ)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const nextItems = [...(editingQuestion.items || [])];
+                          nextItems[iIdx].correctAnswer = 'S';
+                          setEditingQuestion({ ...editingQuestion, items: nextItems, isVerified: true });
+                        }}
+                        className={`px-3 py-1 text-xs font-bold rounded-lg cursor-pointer ${
+                          item.correctAnswer === 'S' ? 'bg-rose-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                        }`}
+                      >
+                        Sai (S)
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* DẠNG 3: Short Answer Editing */}
+            {editingQuestion.part === 'PART_III' && (
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">Đáp án số ngắn</label>
+                <input
+                  type="text"
+                  value={editingQuestion.shortAnswer || ''}
+                  onChange={(e) => setEditingQuestion({ ...editingQuestion, shortAnswer: e.target.value, isVerified: true })}
+                  placeholder="VD: 12,5 hoặc 3 hoặc -4,2"
+                  className="w-full px-3 py-2 text-sm bg-slate-50 border border-slate-200 rounded-lg font-mono font-bold text-slate-900"
+                />
+              </div>
+            )}
+
+            {/* Explanation Editing */}
+            <div>
+              <label className="block text-xs font-bold text-slate-700 mb-1">Hướng dẫn giải chi tiết</label>
+              <textarea
+                rows={2}
+                value={editingQuestion.explanation || ''}
+                onChange={(e) => setEditingQuestion({ ...editingQuestion, explanation: e.target.value })}
+                className="w-full p-2.5 text-xs bg-slate-50 border border-slate-200 rounded-lg"
+              />
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setEditingQuestion(null)}
+                className="px-4 py-2 text-xs font-medium text-slate-600 hover:bg-slate-100 rounded-lg cursor-pointer"
+              >
+                Hủy
+              </button>
+              <button
+                type="button"
+                onClick={() => handleSaveEditedQuestion(editingQuestion)}
+                className="px-5 py-2 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg cursor-pointer shadow-xs"
+              >
+                Lưu thay đổi
               </button>
             </div>
           </div>

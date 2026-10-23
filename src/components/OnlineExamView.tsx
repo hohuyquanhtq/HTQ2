@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Exam, StudentAnswers, ExamResult } from '../types';
+import { Exam, StudentAnswers, ExamResult, UserSession } from '../types';
 import { gradeExam } from '../utils/gradingEngine';
 import MathView from './MathView';
 import { 
@@ -17,18 +17,24 @@ import {
 
 interface OnlineExamViewProps {
   exam: Exam;
+  currentUser?: UserSession | null;
   onFinishExam: (result: ExamResult) => void;
   onExitExam: () => void;
 }
 
 export const OnlineExamView: React.FC<OnlineExamViewProps> = ({
   exam,
+  currentUser,
   onFinishExam,
   onExitExam
 }) => {
-  // Student identification
-  const [studentName, setStudentName] = useState('Nguyễn Văn An');
-  const [studentClass, setStudentClass] = useState('11 Hóa');
+  // Student identification from currentUser or fallback
+  const [studentName, setStudentName] = useState(
+    currentUser?.fullName || 'Nguyễn Văn An'
+  );
+  const [studentClass, setStudentClass] = useState(
+    currentUser?.className || (currentUser?.role === 'STUDENT' ? '11 Chuyên Hóa' : '11A1')
+  );
   const [enteredPasscode, setEnteredPasscode] = useState('');
   const [isPasscodeUnlocked, setIsPasscodeUnlocked] = useState(!exam.passcode);
   const [passcodeError, setPasscodeError] = useState(false);
@@ -100,6 +106,11 @@ export const OnlineExamView: React.FC<OnlineExamViewProps> = ({
       timeSpent,
       startTimeRef.current
     );
+
+    // Attach studentId from currentUser if logged in
+    if (currentUser?.userId) {
+      result.studentId = currentUser.userId;
+    }
 
     // Clear active test answers from storage
     localStorage.removeItem(storageKey);

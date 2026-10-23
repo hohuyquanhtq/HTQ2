@@ -97,10 +97,38 @@ export interface StudentAnswers {
   };
 }
 
+export type UserRole = 'TEACHER' | 'STUDENT';
+
+export interface UserAccount {
+  id: string; // unique ID e.g. "usr_171928374_abc"
+  username: string; // unique username, lowercase trimmed
+  role: UserRole;
+  fullName: string;
+  email?: string;
+  className?: string; // e.g. "11 Chuyên Hóa"
+  phone?: string;
+  passwordHash: string; // SHA-256(password + salt)
+  salt: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface UserSession {
+  userId: string;
+  username: string;
+  role: UserRole;
+  fullName: string;
+  email?: string;
+  className?: string;
+  phone?: string;
+  loggedInAt: string;
+}
+
 export interface ExamResult {
   id: string;
   examId: string;
   examTitle: string;
+  studentId?: string;
   studentName: string;
   studentClass: string;
   startedAt: string;

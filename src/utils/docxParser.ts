@@ -398,7 +398,7 @@ function extractExplanations(text: string): Record<string, string> {
 }
 
 /**
- * Main DOCX Parser with JSZip OMML & Media support
+ * Main DOCX Parser with JSZip OMML, Media support, and line-preserving semantic recognition
  */
 export async function parseDocxFile(file: File): Promise<ParseResult> {
   const originalArrayBuffer = await file.arrayBuffer();
@@ -427,12 +427,12 @@ export async function parseDocxFile(file: File): Promise<ParseResult> {
   const warnings: string[] = [...htmlResult.messages.map((m) => m.message)];
   const unparsedBlocks: string[] = [];
 
-  // Extract meta info
+  // Extract meta info (Title, Subject, Grade, Duration)
   let title = file.name.replace(/\.[^/.]+$/, '');
   let subject = 'Hóa học';
   let grade = 11;
-  let durationMinutes = 50;
-  let chapter = 'Cân bằng hóa học';
+  const durationMinutes = 50;
+  const chapter = 'Cân bằng hóa học';
 
   const lines = rawText.split('\n').map((l) => l.trim()).filter(Boolean);
   const headerBlock = lines.slice(0, 15).join(' ');
@@ -447,198 +447,483 @@ export async function parseDocxFile(file: File): Promise<ParseResult> {
   const titleMatch = headerBlock.match(/(?:CHỦ\s+ĐỀ\s+[^\n–—]+|ĐỀ\s+KIỂM\s+TRA[^\n–—]+|BÀI\s+KIỂM\s+TRA[^\n–—]+)/i);
   if (titleMatch) title = titleMatch[0].trim();
 
-  // Parse Answer Tables & Explanations
+  // Parse Answer Tables & Explanations from HTML / rawText
   const { part1Answers, part1Levels, part2Answers, part3Answers, part3Levels } = parseAnswerTables(rawHtml);
   const explanations = extractExplanations(rawText);
 
-  // Split into sections
-  const sectionSplitRegex = /(?=(?:PHẦN\s+(?:I|II|III|1|2|3)|(?:BẢNG\s+)?ĐÁP\s+ÁN|HƯỚNG\s+DẪN\s+GIẢI))/i;
-  const rawSections = rawText.split(sectionSplitRegex);
+  // Parse document into semantic lines preserving DOM paragraphs, <sub>, <sup>, $latex$, <img>, tables
+  interface DocLine {
+    text: string;
+    html: string;
+    isTable?: boolean;
+  }
 
+  const doc = new DOMParser().parseFromString(rawHtml, 'text/html');
+  const allDocLines: DocLine[] = [];
+
+  // Determine where questions stop and answer tables/explanations begin
+  const bodyNodes = Array.from(doc.body.children);
+  let stopExamBody = false;
+
+  for (const node of bodyNodes) {
+    if (stopExamBody) break;
+
+    const nodeText = (node.textContent || '').trim();
+    const nodeUpper = nodeText.toUpperCase();
+
+    // Check if this node marks the start of the Answer Sheet or Detailed Explanations
+    if (
+      /^(?:BẢNG\s+)?(?:ĐÁP\s+ÁN|HƯỚNG\s+DẪN\s+CHẤM|HƯỚNG\s+DẪN\s+GIẢI|LỜI\s+GIẢI)/i.test(nodeUpper) &&
+      !/^(?:BẢNG\s+)?ĐÁP\s+ÁN\s+CHO\s+CÂU/i.test(nodeUpper)
+    ) {
+      stopExamBody = true;
+      break;
+    }
+
+    if (node.tagName.toLowerCase() === 'table') {
+      // Check if this table is an answer table
+      const tableText = (node.textContent || '').toLowerCase();
+      const isAnswerTable =
+        (tableText.includes('lệnh hỏi') && (tableText.includes('câu 1') || tableText.includes('câu 2'))) ||
+        (tableText.includes('đáp án') && (tableText.includes('câu') || tableText.includes('đa'))) ||
+        (tableText.includes('mức độ') && tableText.includes('câu'));
+
+      if (!isAnswerTable) {
+        // Chemistry/Physics data table belonging to a question
+        allDocLines.push({
+          text: nodeText,
+          html: (node as HTMLElement).outerHTML,
+          isTable: true
+        });
+      }
+      continue;
+    }
+
+    // For paragraph, list, or heading elements: handle embedded <br> to retain true line breaks
+    const innerHtml = (node as HTMLElement).innerHTML || '';
+    if (/<br\s*\/?>/i.test(innerHtml)) {
+      const parts = innerHtml.split(/<br\s*\/?>/i);
+      parts.forEach((partHtml) => {
+        const tempDiv = document.createElement('div');
+        tempDiv.innerHTML = partHtml;
+        const pText = (tempDiv.textContent || '').replace(/\u00A0/g, ' ').trim();
+        if (pText || /<img/i.test(partHtml)) {
+          allDocLines.push({
+            text: pText,
+            html: partHtml.trim()
+          });
+        }
+      });
+    } else {
+      const pText = nodeText.replace(/\u00A0/g, ' ').trim();
+      if (pText || /<img/i.test(innerHtml)) {
+        allDocLines.push({
+          text: pText,
+          html: innerHtml.trim()
+        });
+      }
+    }
+  }
+
+  // Group DocLines into question blocks based on explicit section markers and "Câu X"
+  interface RawQuestionBlock {
+    qNum: number;
+    sectionHint: PartType | null;
+    lines: DocLine[];
+    headerText: string;
+  }
+
+  const rawQuestionBlocks: RawQuestionBlock[] = [];
+  let currentSectionHint: PartType | null = null;
+  let activeBlock: RawQuestionBlock | null = null;
+
+  for (const line of allDocLines) {
+    const text = line.text;
+
+    // Check for Section Header line
+    if (/^PHẦN\s+(?:I\b|1\b)|CÂU\s+TRẮC\s+NGHIỆM\s+(?:NHIỀU|4)\s+LỰA\s+CHỌN/i.test(text)) {
+      currentSectionHint = 'PART_I';
+      continue;
+    }
+    if (/^PHẦN\s+(?:II\b|2\b)|CÂU\s+TRẮC\s+NGHIỆM\s+ĐÚNG\s*\/?\s*SAI/i.test(text)) {
+      currentSectionHint = 'PART_II';
+      continue;
+    }
+    if (/^PHẦN\s+(?:III\b|3\b)|CÂU\s+TRẮC\s+NGHIỆM\s+TRẢ\s+LỜI\s+NGẮN/i.test(text)) {
+      currentSectionHint = 'PART_III';
+      continue;
+    }
+
+    // Check for Question start:
+    // e.g. "Câu 1.", "Câu 1:", "Câu 1 -", "[BIẾT] Câu 1.", "(HIỂU) Câu 2:", "Bài 1:"
+    const qStartMatch = text.match(/^(?:\[[^\]]+\]|\([^\)]+\))?\s*(?:Câu|Bài)\s+(\d+)[:.\-–—]?\s*(.*)$/i);
+
+    if (qStartMatch) {
+      if (activeBlock && activeBlock.lines.length > 0) {
+        rawQuestionBlocks.push(activeBlock);
+      }
+
+      const qNum = parseInt(qStartMatch[1], 10);
+      const remainderText = qStartMatch[2].trim();
+
+      // Clean the header from the first line's HTML for the prompt
+      let firstLineHtml = line.html.replace(/^(?:\[[^\]]+\]|\([^\)]+\))?\s*(?:Câu|Bài)\s+\d+[:.\-–—]?\s*/i, '').trim();
+
+      activeBlock = {
+        qNum,
+        sectionHint: currentSectionHint,
+        lines: [
+          {
+            text: remainderText,
+            html: firstLineHtml || remainderText
+          }
+        ],
+        headerText: text
+      };
+    } else if (activeBlock) {
+      // Append non-header line to the active question block
+      activeBlock.lines.push(line);
+    }
+  }
+
+  // Push the final question block if present
+  if (activeBlock && activeBlock.lines.length > 0) {
+    rawQuestionBlocks.push(activeBlock);
+  }
+
+  // Helper to split a line containing multiple options into individual options
+  // e.g. "A. 1,2 gam.   B. 2,4 gam.   C. 3,6 gam.   D. 4,8 gam."
+  const splitInlineOptions = (rawHtml: string, rawText: string): MultipleChoiceOption[] | null => {
+    // Only search for B, C, D if line starts with A
+    if (!/^[A-D](?![a-zA-Z0-9_])\s*[.):\-]\s+/i.test(rawText)) return null;
+
+    // Matches option indicators preceded by space/tab/semicolon
+    const optRegex = /(?:^|[\s\t\u00A0]{2,}|;\s*)([A-D])(?![a-zA-Z0-9_])\s*[.):\-]\s*([\s\S]*?)(?=(?:[\s\t\u00A0]{2,}|;\s*)[A-D](?![a-zA-Z0-9_])\s*[.):\-]\s*|$)/gi;
+    const matches: MultipleChoiceOption[] = [];
+    let match: RegExpExecArray | null;
+
+    while ((match = optRegex.exec(rawText)) !== null) {
+      const label = match[1].toUpperCase() as 'A' | 'B' | 'C' | 'D';
+      const content = match[2].trim();
+      matches.push({ label, content });
+    }
+
+    if (matches.length >= 2) {
+      return matches;
+    }
+    return null;
+  };
+
+  // Helper to split a line containing multiple True/False statements:
+  // e.g. "a) ...   b) ..."
+  const splitInlineStatements = (rawHtml: string, rawText: string): TrueFalseItem[] | null => {
+    if (!/^[a-d](?![a-zA-Z0-9_])\s*[.):\-–—]\s+/i.test(rawText)) return null;
+
+    const stmtRegex = /(?:^|[\s\t\u00A0]{2,}|;\s*)([a-d])(?![a-zA-Z0-9_])\s*[.):\-–—]\s*([\s\S]*?)(?=(?:[\s\t\u00A0]{2,}|;\s*)[a-d](?![a-zA-Z0-9_])\s*[.):\-–—]\s*|$)/gi;
+    const matches: TrueFalseItem[] = [];
+    let match: RegExpExecArray | null;
+
+    while ((match = stmtRegex.exec(rawText)) !== null) {
+      const label = match[1].toLowerCase() as 'a' | 'b' | 'c' | 'd';
+      let content = match[2].trim();
+      let ans: 'D' | 'S' | null = null;
+
+      if (/\((?:Đúng|Đ|True|T)\)|\[(?:Đúng|Đ|True|T)\]/i.test(content)) {
+        ans = 'D';
+        content = content.replace(/\s*(?:\((?:Đúng|Đ|True|T)\)|\[(?:Đúng|Đ|True|T)\])/gi, '').trim();
+      } else if (/\((?:Sai|S|False|F)\)|\[(?:Sai|S|False|F)\]/i.test(content)) {
+        ans = 'S';
+        content = content.replace(/\s*(?:\((?:Sai|S|False|F)\)|\[(?:Sai|S|False|F)\])/gi, '').trim();
+      }
+
+      matches.push({ label, content, correctAnswer: ans });
+    }
+
+    if (matches.length >= 2) {
+      return matches;
+    }
+    return null;
+  };
+
+  // Process all rawQuestionBlocks into finalized Question objects
   const parsedQuestions: Question[] = [];
   let part1Count = 0;
   let part2Count = 0;
   let part3Count = 0;
 
-  // Helper: Part I parser
-  const parsePart1Chunk = (chunkText: string) => {
-    const qChunks = chunkText.split(/(?=(?:\[[^\]]+\]\s*)?Câu\s+\d+[:.])/i);
-    qChunks.forEach((qc) => {
-      const qNumMatch = qc.match(/Câu\s+(\d+)[:.]/i);
-      if (!qNumMatch) return;
+  for (const block of rawQuestionBlocks) {
+    const qNum = block.qNum;
+    const lines = block.lines;
 
-      const qNum = parseInt(qNumMatch[1], 10);
-      const afterQHeader = qc.replace(/^[\s\S]*?Câu\s+\d+[:.]/i, '').trim();
+    // Extract cognitive level from header or early lines
+    const fullTextSample = lines.map((l) => l.text).join(' ');
+    const headerLevel = extractCognitiveLevel(block.headerText + ' ' + fullTextSample.slice(0, 100));
+    let level: CognitiveLevel = headerLevel.level;
+    let customTag: string | undefined = headerLevel.customTag;
 
-      // Extract cognitive level
-      let { level, customTag, cleanText } = extractCognitiveLevel(qc.slice(0, 60) + ' ' + afterQHeader);
-      
-      // If table provided cognitive level, honor it
+    // 1. Check for DẠNG 2: Đúng / Sai 4 phát biểu (a, b, c, d)
+    // Rule: Prompt followed by statements starting with a), b), c), d) or a., b., c., d.
+    // Must NOT mistake mid-sentence units or formulas like (a) mol or pH for statement labels.
+    const trueFalseStatements: TrueFalseItem[] = [];
+    let tfPromptLines: string[] = [];
+    let currentTfIndex = -1;
+    let foundTfMarkers = false;
+
+    for (const line of lines) {
+      // Check inline multiple statements in one line
+      const inlineStmts = splitInlineStatements(line.html, line.text);
+      if (inlineStmts) {
+        foundTfMarkers = true;
+        inlineStmts.forEach((st) => trueFalseStatements.push(st));
+        currentTfIndex = trueFalseStatements.length - 1;
+        continue;
+      }
+
+      // Check single line statement: ^([a-d])(?![a-zA-Z0-9_])\s*[.):\-–—]\s*(.*)$
+      const stmtMatch = line.text.match(/^([a-d])(?![a-zA-Z0-9_])\s*[.):\-–—]\s*(.*)$/i);
+
+      if (stmtMatch) {
+        foundTfMarkers = true;
+        const label = stmtMatch[1].toLowerCase() as 'a' | 'b' | 'c' | 'd';
+        let content = stmtMatch[2].trim();
+        let ans: 'D' | 'S' | null = null;
+
+        // Check inline Đúng/Sai tag in statement
+        if (/\((?:Đúng|Đ|True|T)\)|\[(?:Đúng|Đ|True|T)\]/i.test(content)) {
+          ans = 'D';
+          content = content.replace(/\s*(?:\((?:Đúng|Đ|True|T)\)|\[(?:Đúng|Đ|True|T)\])/gi, '').trim();
+        } else if (/\((?:Sai|S|False|F)\)|\[(?:Sai|S|False|F)\]/i.test(content)) {
+          ans = 'S';
+          content = content.replace(/\s*(?:\((?:Sai|S|False|F)\)|\[(?:Sai|S|False|F)\])/gi, '').trim();
+        }
+
+        trueFalseStatements.push({
+          label,
+          content,
+          correctAnswer: ans
+        });
+        currentTfIndex = trueFalseStatements.length - 1;
+      } else if (currentTfIndex >= 0) {
+        // Multi-line statement support: append line to active statement
+        const active = trueFalseStatements[currentTfIndex];
+        active.content = active.content ? `${active.content}<br/>${line.html}` : line.html;
+      } else {
+        // Line belongs to prompt before statement a)
+        if (line.html) tfPromptLines.push(line.html);
+      }
+    }
+
+    const hasValidTfSequence =
+      trueFalseStatements.length >= 2 &&
+      trueFalseStatements.some((it) => it.label === 'a') &&
+      trueFalseStatements.some((it) => it.label === 'b');
+
+    // 2. Check for DẠNG 1: Trắc nghiệm nhiều lựa chọn (A, B, C, D)
+    // Rule: Line starts with A., B., C., D. Must NOT mistake Al, Ag, Ca, CO2, C2H5OH for options.
+    const mcOptions: MultipleChoiceOption[] = [];
+    let mcPromptLines: string[] = [];
+    let currentMcIndex = -1;
+    let detectedCorrectOpt: string | null = null;
+
+    for (const line of lines) {
+      // Check inline multiple options in one line
+      const inlineOpts = splitInlineOptions(line.html, line.text);
+      if (inlineOpts) {
+        inlineOpts.forEach((opt) => {
+          if (opt.content.includes('*') || opt.content.includes('<u>') || opt.content.includes('[x]')) {
+            detectedCorrectOpt = opt.label;
+            opt.content = opt.content.replace(/\*|\[x\]/g, '').trim();
+          }
+          mcOptions.push(opt);
+        });
+        currentMcIndex = mcOptions.length - 1;
+        continue;
+      }
+
+      // Check single line option: ^([A-D])(?![a-zA-Z0-9_])\s*[.):\-]\s*(.*)$
+      const optMatch = line.text.match(/^([A-D])(?![a-zA-Z0-9_])\s*[.):\-]\s*(.*)$/);
+
+      if (optMatch) {
+        const label = optMatch[1].toUpperCase() as 'A' | 'B' | 'C' | 'D';
+        let content = optMatch[2].trim();
+
+        // Check if option was marked correct with asterisk or underline
+        if (line.text.includes('*') || line.html.includes('<u>') || line.text.includes('[x]')) {
+          detectedCorrectOpt = label;
+          content = content.replace(/\*|\[x\]/g, '').trim();
+        }
+
+        mcOptions.push({
+          label,
+          content
+        });
+        currentMcIndex = mcOptions.length - 1;
+      } else if (currentMcIndex >= 0) {
+        // Multi-line option support: append line to active option
+        const active = mcOptions[currentMcIndex];
+        active.content = active.content ? `${active.content}<br/>${line.html}` : line.html;
+      } else {
+        // Line belongs to prompt before option A
+        if (line.html) mcPromptLines.push(line.html);
+      }
+    }
+
+    const hasValidMcSequence =
+      mcOptions.length >= 2 &&
+      mcOptions.some((o) => o.label === 'A') &&
+      mcOptions.some((o) => o.label === 'B');
+
+    // 3. CLASSIFICATION & STRUCTURE ASSIGNMENT
+    // Priority:
+    // A) If section hint is PART_II or valid a, b statements found -> Dạng 2 (Đúng / Sai)
+    // B) If section hint is PART_I or valid A, B options found -> Dạng 1 (Nhiều lựa chọn)
+    // C) If section hint is PART_III or neither found -> Dạng 3 (Trả lời ngắn)
+
+    const rawFullText = lines.map((l) => l.text).join('\n');
+    const rawFullHtml = lines.map((l) => l.html).join('<br/>');
+
+    // Lookup Table Answers (both absolute qNum and relative index)
+    const relPart1 = part1Count + 1;
+    const relPart2 = part2Count + 1;
+    const relPart3 = part3Count + 1;
+
+    // Check if Question is DẠNG 2: TRUE_FALSE
+    if (
+      (block.sectionHint === 'PART_II' && trueFalseStatements.length > 0) ||
+      (hasValidTfSequence && (!hasValidMcSequence || block.sectionHint === 'PART_II'))
+    ) {
+      part2Count++;
+      const warningsList: string[] = [];
+
+      // Reconcile statement answers from table if not found inline
+      const tableAnswers = part2Answers[qNum] || part2Answers[relPart2] || {};
+      trueFalseStatements.forEach((st) => {
+        if (!st.correctAnswer && tableAnswers[st.label]) {
+          st.correctAnswer = tableAnswers[st.label];
+        }
+      });
+
+      const missingAnswers = trueFalseStatements.filter((it) => it.correctAnswer === null).length;
+      if (missingAnswers > 0) {
+        warningsList.push(`Còn ${missingAnswers}/4 ý chưa có đáp án Đúng/Sai`);
+      }
+
+      if (trueFalseStatements.length < 4) {
+        warningsList.push(`Chưa xác định – cần kiểm tra: Chỉ nhận diện được ${trueFalseStatements.length}/4 ý a, b, c, d`);
+      }
+
+      const promptHtml = tfPromptLines.length > 0 ? tfPromptLines.join('<br/>') : rawFullHtml;
+
+      parsedQuestions.push({
+        id: `q-p2-${qNum}-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+        subject,
+        grade,
+        chapter,
+        part: 'PART_II',
+        type: 'TRUE_FALSE',
+        level,
+        customLevelTag: customTag,
+        content: promptHtml,
+        items: trueFalseStatements,
+        explanation: explanations[qNum.toString()] || explanations[`PART_II_${relPart2}`] || '',
+        images: extractedImages,
+        isVerified: missingAnswers === 0 && trueFalseStatements.length === 4,
+        validationWarnings: warningsList,
+        rawText: rawFullText,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      });
+    }
+    // Check if Question is DẠNG 1: MULTIPLE_CHOICE
+    else if (
+      (block.sectionHint === 'PART_I' && mcOptions.length > 0) ||
+      hasValidMcSequence
+    ) {
+      part1Count++;
+      const warningsList: string[] = [];
+
+      // Check level from table
       if (part1Levels[qNum]) {
         level = part1Levels[qNum].level;
         if (part1Levels[qNum].customTag) customTag = part1Levels[qNum].customTag;
+      } else if (part1Levels[relPart1]) {
+        level = part1Levels[relPart1].level;
+        if (part1Levels[relPart1].customTag) customTag = part1Levels[relPart1].customTag;
       }
 
-      // Extract options: A. B. C. D.
-      const optionSplitRegex = /(?=[A-D][.):\-])/;
-      const optParts = cleanText.split(optionSplitRegex);
-
-      if (optParts.length >= 4) {
-        const questionPrompt = optParts[0].trim();
-        const options: MultipleChoiceOption[] = [];
-        let detectedCorrect: string | null = part1Answers[qNum] || null;
-
-        for (let i = 1; i < optParts.length; i++) {
-          const part = optParts[i].trim();
-          const labelMatch = part.match(/^([A-D])[.):\-]\s*([\s\S]*)$/);
-          if (labelMatch) {
-            const label = labelMatch[1].toUpperCase() as 'A' | 'B' | 'C' | 'D';
-            const content = labelMatch[2].trim();
-
-            if (part.includes('*') || part.includes('<u>') || part.includes('[x]')) {
-              detectedCorrect = label;
-            }
-
-            options.push({ label, content });
-          }
-        }
-
-        const warningsList: string[] = [];
-        if (!detectedCorrect) warningsList.push('Chưa xác nhận đáp án đúng');
-        if (options.length < 4) warningsList.push(`Chỉ nhận diện được ${options.length}/4 phương án`);
-
-        parsedQuestions.push({
-          id: `q-p1-${qNum}-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
-          subject,
-          grade,
-          chapter,
-          part: 'PART_I',
-          type: 'MULTIPLE_CHOICE',
-          level,
-          customLevelTag: customTag,
-          content: questionPrompt,
-          options,
-          correctOption: detectedCorrect,
-          explanation: explanations[qNum.toString()] || '',
-          images: extractedImages,
-          isVerified: !!detectedCorrect && options.length === 4,
-          validationWarnings: warningsList,
-          rawText: qc.trim(),
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString()
-        });
-        part1Count++;
-      } else {
-        unparsedBlocks.push(qc.trim());
+      // Check table answer
+      if (!detectedCorrectOpt) {
+        detectedCorrectOpt = part1Answers[qNum] || part1Answers[relPart1] || null;
       }
-    });
-  };
 
-  // Helper: Part II parser
-  const parsePart2Chunk = (chunkText: string) => {
-    const qChunks = chunkText.split(/(?=(?:\[[^\]]+\]\s*)?Câu\s+\d+[:.])/i);
-    qChunks.forEach((qc) => {
-      const qNumMatch = qc.match(/Câu\s+(\d+)[:.]/i);
-      if (!qNumMatch) return;
-
-      const qNum = parseInt(qNumMatch[1], 10);
-      const afterQHeader = qc.replace(/^[\s\S]*?Câu\s+\d+[:.]/i, '').trim();
-
-      const { level, customTag, cleanText } = extractCognitiveLevel(qc.slice(0, 80) + ' ' + afterQHeader);
-
-      // Extract sub-items a) b) c) d)
-      const subItemSplitRegex = /(?=[a-d][.)\-]\s+)/i;
-      const parts = cleanText.split(subItemSplitRegex);
-
-      if (parts.length >= 2) {
-        const questionPrompt = parts[0].trim();
-        const items: TrueFalseItem[] = [];
-        const tableAnswers = part2Answers[qNum] || {};
-
-        for (let i = 1; i < parts.length; i++) {
-          const itemText = parts[i].trim();
-          const match = itemText.match(/^([a-d])[.)\-]\s*([\s\S]*)$/i);
-          if (match) {
-            const label = match[1].toLowerCase() as 'a' | 'b' | 'c' | 'd';
-            let content = match[2].trim();
-
-            let ans: 'D' | 'S' | null = tableAnswers[label] || null;
-
-            if (/\((?:Đúng|D|True)\)/i.test(content)) {
-              ans = 'D';
-              content = content.replace(/\s*\((?:Đúng|D|True)\)/i, '');
-            } else if (/\((?:Sai|S|False)\)/i.test(content)) {
-              ans = 'S';
-              content = content.replace(/\s*\((?:Sai|S|False)\)/i, '');
-            }
-
-            items.push({
-              label,
-              content,
-              correctAnswer: ans
-            });
-          }
-        }
-
-        const missingAnswers = items.filter((it) => it.correctAnswer === null).length;
-        const warningsList: string[] = [];
-        if (missingAnswers > 0) warningsList.push(`Còn ${missingAnswers}/4 ý chưa có đáp án Đúng/Sai`);
-        if (items.length < 4) warningsList.push(`Chỉ nhận diện được ${items.length}/4 ý a, b, c, d`);
-
-        parsedQuestions.push({
-          id: `q-p2-${qNum}-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
-          subject,
-          grade,
-          chapter,
-          part: 'PART_II',
-          type: 'TRUE_FALSE',
-          level,
-          customLevelTag: customTag,
-          content: questionPrompt,
-          items,
-          explanation: explanations[qNum.toString()] || '',
-          images: extractedImages,
-          isVerified: missingAnswers === 0 && items.length === 4,
-          validationWarnings: warningsList,
-          rawText: qc.trim(),
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString()
-        });
-        part2Count++;
-      } else {
-        unparsedBlocks.push(qc.trim());
+      if (!detectedCorrectOpt) {
+        warningsList.push('Chưa xác nhận đáp án đúng');
       }
-    });
-  };
 
-  // Helper: Part III parser
-  const parsePart3Chunk = (chunkText: string) => {
-    const qChunks = chunkText.split(/(?=(?:\[[^\]]+\]\s*)?Câu\s+\d+[:.])/i);
-    qChunks.forEach((qc) => {
-      const qNumMatch = qc.match(/Câu\s+(\d+)[:.]/i);
-      if (!qNumMatch) return;
+      if (mcOptions.length < 4) {
+        warningsList.push(`Chưa xác định – cần kiểm tra: Chỉ nhận diện được ${mcOptions.length}/4 phương án A, B, C, D (thiếu phương án)`);
+      }
 
-      const qNum = parseInt(qNumMatch[1], 10);
-      const afterQHeader = qc.replace(/^[\s\S]*?Câu\s+\d+[:.]/i, '').trim();
+      const promptHtml = mcPromptLines.length > 0 ? mcPromptLines.join('<br/>') : rawFullHtml;
 
-      let { level, customTag, cleanText } = extractCognitiveLevel(qc.slice(0, 80) + ' ' + afterQHeader);
+      parsedQuestions.push({
+        id: `q-p1-${qNum}-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+        subject,
+        grade,
+        chapter,
+        part: 'PART_I',
+        type: 'MULTIPLE_CHOICE',
+        level,
+        customLevelTag: customTag,
+        content: promptHtml,
+        options: mcOptions,
+        correctOption: detectedCorrectOpt,
+        explanation: explanations[qNum.toString()] || explanations[`PART_I_${relPart1}`] || '',
+        images: extractedImages,
+        isVerified: !!detectedCorrectOpt && mcOptions.length === 4,
+        validationWarnings: warningsList,
+        rawText: rawFullText,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      });
+    }
+    // DẠNG 3: SHORT_ANSWER (Calculation / Problem without A-D options or a-d statements)
+    else {
+      part3Count++;
+      const warningsList: string[] = [];
 
+      // Cognitive level from table
       if (part3Levels[qNum]) {
         level = part3Levels[qNum].level;
         if (part3Levels[qNum].customTag) customTag = part3Levels[qNum].customTag;
+      } else if (part3Levels[relPart3]) {
+        level = part3Levels[relPart3].level;
+        if (part3Levels[relPart3].customTag) customTag = part3Levels[relPart3].customTag;
       }
 
-      let detectedAns: string | null = part3Answers[qNum] || null;
+      // Look for detected answer in text or table
+      let detectedAns: string | null = part3Answers[qNum] || part3Answers[relPart3] || null;
 
-      const textAnsMatch = cleanText.match(/(?:Đáp\s+án|Trả\s+lời|Kết\s+quả)[:.]\s*([^\n]+)/i);
-      let prompt = cleanText;
+      let promptHtml = rawFullHtml;
+      const textAnsMatch = rawFullText.match(/(?:Đáp\s+án|Trả\s+lời|Kết\s+quả|ĐS|KQ)[:.]\s*([^\n\r<]+)/i);
       if (textAnsMatch) {
-        if (!detectedAns) detectedAns = textAnsMatch[1].trim();
-        prompt = prompt.replace(/(?:Đáp\s+án|Trả\s+lời|Kết\s+quả)[:.]\s*[^\n]+/i, '').trim();
+        if (!detectedAns) {
+          detectedAns = textAnsMatch[1].trim();
+        }
+        // Remove answer declaration line from prompt so it's not given away to students
+        promptHtml = promptHtml.replace(/(?:<p>|<div>)?(?:Đáp\s+án|Trả\s+lời|Kết\s+quả|ĐS|KQ)[:.][^\n<]*(?:<\/p>|<\/div>)?/gi, '').trim();
       }
 
-      const warningsList: string[] = [];
-      if (!detectedAns) warningsList.push('Chưa xác nhận đáp án ngắn');
+      if (!detectedAns) {
+        warningsList.push('Chưa xác nhận đáp án ngắn');
+      }
+
+      // If document explicitly declared Phần I or II but no options were found, alert teacher
+      if (block.sectionHint === 'PART_I') {
+        warningsList.push('Nằm trong Phần I nhưng không tìm thấy cấu trúc phương án A, B, C, D - Chưa xác định, cần kiểm tra');
+      } else if (block.sectionHint === 'PART_II') {
+        warningsList.push('Nằm trong Phần II nhưng không tìm thấy 4 ý a, b, c, d - Chưa xác định, cần kiểm tra');
+      }
 
       parsedQuestions.push({
         id: `q-p3-${qNum}-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
@@ -649,56 +934,20 @@ export async function parseDocxFile(file: File): Promise<ParseResult> {
         type: 'SHORT_ANSWER',
         level,
         customLevelTag: customTag,
-        content: prompt,
+        content: promptHtml,
         shortAnswer: detectedAns,
-        explanation: explanations[qNum.toString()] || '',
+        explanation: explanations[qNum.toString()] || explanations[`PART_III_${relPart3}`] || '',
         images: extractedImages,
         isVerified: !!detectedAns,
         validationWarnings: warningsList,
-        rawText: qc.trim(),
+        rawText: rawFullText,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString()
       });
-      part3Count++;
-    });
-  };
-
-  // Parse according to sections
-  let hasExplicitParts = false;
-
-  rawSections.forEach((section) => {
-    const trimmed = section.trim();
-    if (!trimmed) return;
-
-    if (/^PHẦN\s+(?:I\b|1\b)|TRẮC\s+NGHIỆM\s+4\s+LỰA\s+CHỌN/i.test(trimmed)) {
-      hasExplicitParts = true;
-      parsePart1Chunk(trimmed);
-    } else if (/^PHẦN\s+(?:II\b|2\b)|ĐÚNG\s*\/?\s*SAI/i.test(trimmed)) {
-      hasExplicitParts = true;
-      parsePart2Chunk(trimmed);
-    } else if (/^PHẦN\s+(?:III\b|3\b)|TRẢ\s+LỜI\s+NGẮN/i.test(trimmed)) {
-      hasExplicitParts = true;
-      parsePart3Chunk(trimmed);
     }
-  });
-
-  // If no explicit "PHẦN I/II/III" headings, auto-detect
-  if (!hasExplicitParts || parsedQuestions.length === 0) {
-    const allQuestions = rawText.split(/(?=(?:\[[^\]]+\]\s*)?Câu\s+\d+[:.])/i);
-    allQuestions.forEach((qBlock) => {
-      if (!/Câu\s+\d+[:.]/i.test(qBlock.trim())) return;
-
-      if (/[A-D][.)\-]\s+/i.test(qBlock) && qBlock.split(/(?=[A-D][.):\-])/).length >= 4) {
-        parsePart1Chunk(qBlock);
-      } else if (/[a-d][.)\-]\s+/i.test(qBlock) && qBlock.split(/(?=[a-d][.)\-]\s+)/i).length >= 3) {
-        parsePart2Chunk(qBlock);
-      } else {
-        parsePart3Chunk(qBlock);
-      }
-    });
   }
 
-  // Cross-check duplicates
+  // Cross-check duplicate questions
   const contentMap = new Map<string, number>();
   parsedQuestions.forEach((q) => {
     const key = q.content.slice(0, 80).toLowerCase().trim();
@@ -731,3 +980,4 @@ export async function parseDocxFile(file: File): Promise<ParseResult> {
     warnings
   };
 }
+
