@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { ExamResult, Exam, COGNITIVE_LEVEL_LABELS, CognitiveLevel } from '../types';
 import MathView from './MathView';
+import { normalizeTF, isShortAnswerCorrect } from '../utils/gradingEngine';
 import confetti from 'canvas-confetti';
 import { 
   Award, 
@@ -350,7 +351,9 @@ export const ExamResultView: React.FC<ExamResultViewProps> = ({
                   {q.items.map((item) => {
                     const userVal = studentAns?.subItems?.[item.label];
                     const correctVal = item.correctAnswer;
-                    const isCorrect = userVal && userVal === correctVal;
+                    const normUser = normalizeTF(userVal);
+                    const normCorrect = normalizeTF(correctVal);
+                    const isCorrect = !!(normUser && normCorrect && normUser === normCorrect);
 
                     return (
                       <div
@@ -388,22 +391,34 @@ export const ExamResultView: React.FC<ExamResultViewProps> = ({
               )}
 
               {/* Part III Review */}
-              {q.part === 'PART_III' && (
-                <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 flex items-center justify-between text-xs">
-                  <div className="flex items-center gap-3">
-                    <span className="text-slate-600">Câu trả lời của bạn:</span>
-                    <span className="font-mono font-bold text-slate-900 bg-white px-2.5 py-1 rounded border">
-                      {studentAns?.shortAnswerText || '(Chưa nhập)'}
-                    </span>
+              {q.part === 'PART_III' && (() => {
+                const isCorrect = isShortAnswerCorrect(studentAns?.shortAnswerText || '', q.shortAnswer || '');
+                return (
+                  <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 flex flex-wrap items-center justify-between gap-3 text-xs">
+                    <div className="flex items-center gap-3">
+                      <span className="text-slate-600">Câu trả lời của bạn:</span>
+                      <span className="font-mono font-bold text-slate-900 bg-white px-2.5 py-1 rounded border">
+                        {studentAns?.shortAnswerText || '(Chưa nhập)'}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <span className="text-slate-600">Đáp án chuẩn:</span>
+                      <span className="font-mono font-bold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded border border-emerald-300">
+                        {q.shortAnswer}
+                      </span>
+                      {isCorrect ? (
+                        <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 font-bold rounded">
+                          Đúng (+{(exam.partPoints.PART_III / (exam.questions.filter((x) => x.part === 'PART_III').length || 1)).toFixed(2)}đ)
+                        </span>
+                      ) : (
+                        <span className="px-2 py-0.5 bg-rose-100 text-rose-800 font-bold rounded">
+                          Chưa đúng
+                        </span>
+                      )}
+                    </div>
                   </div>
-                  <div className="flex items-center gap-3">
-                    <span className="text-slate-600">Đáp án chuẩn:</span>
-                    <span className="font-mono font-bold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded border border-emerald-300">
-                      {q.shortAnswer}
-                    </span>
-                  </div>
-                </div>
-              )}
+                );
+              })()}
 
               {/* Explanation section */}
               {isUnlocked && q.explanation && (

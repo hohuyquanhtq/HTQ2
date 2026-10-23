@@ -1,6 +1,23 @@
 import { Exam, StudentAnswers, ExamResult, CognitiveLevel } from '../types';
 
 /**
+ * Normalizes True/False values:
+ * 'Đ', 'đ', 'D', 'd', 'True', 'T' -> 'D'
+ * 'S', 's', 'Sai', 'False', 'F' -> 'S'
+ */
+export function normalizeTF(val?: string | null): 'D' | 'S' | null {
+  if (!val) return null;
+  const clean = val.toString().toUpperCase().trim();
+  if (clean.includes('Đ') || clean === 'D' || clean === 'T' || clean.includes('TRUE') || clean.includes('ĐÚNG')) {
+    return 'D';
+  }
+  if (clean.includes('S') || clean === 'F' || clean.includes('FALSE') || clean.includes('SAI')) {
+    return 'S';
+  }
+  return null;
+}
+
+/**
  * Normalizes a short answer string:
  * - Trims whitespace
  * - Converts lowercase
@@ -10,16 +27,61 @@ export function normalizeShortAnswer(val: string): string {
   if (!val) return '';
   let str = val.trim().toLowerCase();
   str = str.replace(',', '.');
+  // Remove common unit annotations like " (gam)", " (mol)", " (lít)", " m", " gam"
+  str = str.replace(/\s*\([a-zA-ZÀ-ỹ\s\/%^0-9-]+\)$/, '');
+  str = str.replace(/\s+(gam|g|mol|l|ml|lít|m|cm|kg|atm|bar|j|kj|kwh)$/, '');
+  
   // If numeric, parse and reformat to remove trailing .0 or leading zeros
   const num = parseFloat(str);
   if (!isNaN(num) && /^-?\d+(\.\d+)?$/.test(str)) {
     return num.toString();
   }
-  return str;
+  return str.trim();
 }
 
 /**
- * Grades a full student submission against an exam.
+ * Compares student's short answer against standard answer:
+ * Handles multiple accepted alternatives separated by ;, /, |, or 'hoặc'.
+ * Handles decimal comma vs dot (2,5 == 2.5).
+ * Handles scientific tolerance for floating numbers.
+ */
+export function isShortAnswerCorrect(studentInput: string, standardAnswer: string): boolean {
+  if (!studentInput || !standardAnswer) return false;
+  
+  const normStudent = normalizeShortAnswer(studentInput);
+  if (!normStudent) return false;
+
+  // Split standard answer into acceptable candidates
+  const candidates = standardAnswer
+    .split(/;|\/|\||\n|\s+hoặc\s+/i)
+    .map((c) => normalizeShortAnswer(c))
+    .filter((c) => c.length > 0);
+
+  // If no candidates found, fallback to single normalized
+  if (candidates.length === 0) {
+    candidates.push(normalizeShortAnswer(standardAnswer));
+  }
+
+  const studentNum = parseFloat(normStudent);
+  const isStudentNum = !isNaN(studentNum) && /^-?\d+(\.\d+)?$/.test(normStudent);
+
+  for (const candidate of candidates) {
+    if (normStudent === candidate) return true;
+    
+    // Check numeric equivalence
+    if (isStudentNum) {
+      const candNum = parseFloat(candidate);
+      if (!isNaN(candNum) && Math.abs(studentNum - candNum) < 1e-4) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Grades a full student submission against an exam according to GDPT 2018 regulations.
  */
 export function gradeExam(
   exam: Exam,
@@ -40,7 +102,7 @@ export function gradeExam(
 
   p1Questions.forEach((q) => {
     const studentAns = answers[q.id]?.selectedOption;
-    if (studentAns && q.correctOption && studentAns.toUpperCase() === q.correctOption.toUpperCase()) {
+    if (studentAns && q.correctOption && studentAns.toUpperCase().trim() === q.correctOption.toUpperCase().trim()) {
       part1Score += p1WeightPerQ;
       p1Correct++;
     }
@@ -63,8 +125,9 @@ export function gradeExam(
 
     let correctSubItems = 0;
     q.items.forEach((item) => {
-      const studentVal = studentSubAnswers[item.label];
-      if (studentVal && item.correctAnswer && studentVal === item.correctAnswer) {
+      const studentVal = normalizeTF(studentSubAnswers[item.label]);
+      const standardVal = normalizeTF(item.correctAnswer);
+      if (studentVal && standardVal && studentVal === standardVal) {
         correctSubItems++;
       }
     });
@@ -85,7 +148,7 @@ export function gradeExam(
     }
   });
 
-  // Part III Points
+  // Part III Points (Trả lời ngắn)
   const p3WeightPerQ = p3Questions.length > 0 ? exam.partPoints.PART_III / p3Questions.length : 0;
   let part3Score = 0;
   let p3Correct = 0;
@@ -93,10 +156,7 @@ export function gradeExam(
   p3Questions.forEach((q) => {
     const studentText = answers[q.id]?.shortAnswerText || '';
     if (q.shortAnswer && studentText) {
-      const normStudent = normalizeShortAnswer(studentText);
-      const normCorrect = normalizeShortAnswer(q.shortAnswer);
-
-      if (normStudent === normCorrect) {
+      if (isShortAnswerCorrect(studentText, q.shortAnswer)) {
         part3Score += p3WeightPerQ;
         p3Correct++;
       }
@@ -158,7 +218,9 @@ export function gradeExam(
       const sub = answers[q.id]?.subItems || {};
       let c = 0;
       q.items?.forEach((it) => {
-        if (sub[it.label] && sub[it.label] === it.correctAnswer) c++;
+        const sVal = normalizeTF(sub[it.label]);
+        const aVal = normalizeTF(it.correctAnswer);
+        if (sVal && aVal && sVal === aVal) c++;
       });
       let factor = 0;
       if (c === 1) factor = 0.1;
@@ -169,7 +231,7 @@ export function gradeExam(
       if (c === 4) isFull = true;
     } else {
       weight = p3WeightPerQ;
-      if (normalizeShortAnswer(answers[q.id]?.shortAnswerText || '') === normalizeShortAnswer(q.shortAnswer || '')) {
+      if (isShortAnswerCorrect(answers[q.id]?.shortAnswerText || '', q.shortAnswer || '')) {
         earned = weight;
         isFull = true;
       }

@@ -186,6 +186,22 @@ export const OnlineExamView: React.FC<OnlineExamViewProps> = ({
     };
   }, [answers, exam.questions]);
 
+  // List of question numbers that are currently unanswered
+  const unansweredIndices = useMemo(() => {
+    const list: number[] = [];
+    exam.questions.forEach((q, idx) => {
+      const ans = answers[q.id];
+      if (!ans) {
+        list.push(idx + 1);
+        return;
+      }
+      if (q.part === 'PART_I' && !ans.selectedOption) list.push(idx + 1);
+      else if (q.part === 'PART_II' && (!ans.subItems || Object.keys(ans.subItems).length === 0)) list.push(idx + 1);
+      else if (q.part === 'PART_III' && (!ans.shortAnswerText || ans.shortAnswerText.trim() === '')) list.push(idx + 1);
+    });
+    return list;
+  }, [answers, exam.questions]);
+
   // Jump to next/prev
   const currentIndex = exam.questions.findIndex((q) => q.id === activeQuestionId);
 
@@ -662,8 +678,38 @@ export const OnlineExamView: React.FC<OnlineExamViewProps> = ({
               </div>
             </div>
 
+            {/* Student Info Confirmation */}
+            <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200 space-y-2.5">
+              <div className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                <User className="w-3.5 h-3.5 text-indigo-600" />
+                <span>Thông tin thí sinh nộp bài:</span>
+              </div>
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                <div>
+                  <label className="text-[11px] text-slate-500 mb-1 block">Họ và tên</label>
+                  <input
+                    type="text"
+                    value={studentName}
+                    onChange={(e) => setStudentName(e.target.value)}
+                    placeholder="Họ và tên thí sinh"
+                    className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg text-xs font-semibold text-slate-900 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                  />
+                </div>
+                <div>
+                  <label className="text-[11px] text-slate-500 mb-1 block">Lớp / Khối</label>
+                  <input
+                    type="text"
+                    value={studentClass}
+                    onChange={(e) => setStudentClass(e.target.value)}
+                    placeholder="Ví dụ: 11A1"
+                    className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg text-xs font-semibold text-slate-900 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                  />
+                </div>
+              </div>
+            </div>
+
             {/* Completion Status */}
-            <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 space-y-2 text-xs">
+            <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 space-y-2 text-xs">
               <div className="flex items-center justify-between">
                 <span className="text-slate-600">Số câu đã trả lời:</span>
                 <span className="font-bold text-emerald-700 tabular-nums">
@@ -678,10 +724,25 @@ export const OnlineExamView: React.FC<OnlineExamViewProps> = ({
               )}
             </div>
 
-            {answeredStats.unanswered > 0 && (
-              <p className="text-xs text-slate-500 leading-relaxed">
-                Bạn vẫn còn <strong>{answeredStats.unanswered} câu chưa hoàn thành</strong>. Điểm số các câu chưa làm sẽ tính là 0 điểm. Bạn có chắc chắn muốn nộp bài ngay bây giờ?
-              </p>
+            {unansweredIndices.length > 0 && (
+              <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs space-y-1.5">
+                <div className="font-semibold text-rose-800">
+                  Các câu chưa làm ({unansweredIndices.length} câu):
+                </div>
+                <div className="text-rose-700 font-mono text-[11px] flex flex-wrap gap-1">
+                  {unansweredIndices.slice(0, 15).map((num) => (
+                    <span key={num} className="bg-rose-100 px-1.5 py-0.5 rounded font-bold">
+                      Câu {num}
+                    </span>
+                  ))}
+                  {unansweredIndices.length > 15 && (
+                    <span className="italic self-center">... và {unansweredIndices.length - 15} câu nữa</span>
+                  )}
+                </div>
+                <p className="text-[11px] text-rose-600 pt-0.5 leading-relaxed">
+                  Điểm số các câu chưa làm sẽ được tính là 0 điểm. Bạn có chắc chắn muốn nộp bài ngay bây giờ?
+                </p>
+              </div>
             )}
 
             <div className="flex items-center justify-end gap-3 pt-2">
