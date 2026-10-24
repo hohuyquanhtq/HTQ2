@@ -1,4 +1,4 @@
-import { Exam, StudentAnswers, ExamResult, CognitiveLevel } from '../types';
+import { Exam, StudentAnswers, ExamResult, CognitiveLevel, QuestionResultStatus, QuestionGradingDetail } from '../types';
 
 /**
  * Normalizes True/False values:
@@ -95,6 +95,8 @@ export function gradeExam(
   const p2Questions = exam.questions.filter((q) => q.part === 'PART_II');
   const p3Questions = exam.questions.filter((q) => q.part === 'PART_III');
 
+  const questionDetails: Record<string, QuestionGradingDetail> = {};
+
   // Part I Points
   const p1WeightPerQ = p1Questions.length > 0 ? exam.partPoints.PART_I / p1Questions.length : 0;
   let part1Score = 0;
@@ -102,10 +104,20 @@ export function gradeExam(
 
   p1Questions.forEach((q) => {
     const studentAns = answers[q.id]?.selectedOption;
-    if (studentAns && q.correctOption && studentAns.toUpperCase().trim() === q.correctOption.toUpperCase().trim()) {
+    const isAnswered = !!studentAns && studentAns.trim().length > 0;
+    const isCorrect = isAnswered && !!q.correctOption && studentAns.toUpperCase().trim() === q.correctOption.toUpperCase().trim();
+    const qScore = isCorrect ? p1WeightPerQ : 0;
+
+    if (isCorrect) {
       part1Score += p1WeightPerQ;
       p1Correct++;
     }
+
+    questionDetails[q.id] = {
+      score: Math.round(qScore * 100) / 100,
+      maxScore: Math.round(p1WeightPerQ * 100) / 100,
+      status: isCorrect ? 'CORRECT' : (isAnswered ? 'INCORRECT' : 'UNANSWERED')
+    };
   });
 
   // Part II Points (Lũy tiến Bộ GD&ĐT 2018)
@@ -119,33 +131,65 @@ export function gradeExam(
   let p2FullCorrect = 0;
   let p2PartialCorrect = 0;
 
+  let subItemsTotalCount = 0;
+  let subItemsCorrectCount = 0;
+  let subItemsIncorrectCount = 0;
+  let subItemsUnansweredCount = 0;
+
   p2Questions.forEach((q) => {
     if (!q.items || q.items.length === 0) return;
     const studentSubAnswers = answers[q.id]?.subItems || {};
 
-    let correctSubItems = 0;
+    let qCorrectSubs = 0;
+    let qAnsweredSubs = 0;
+
     q.items.forEach((item) => {
+      subItemsTotalCount++;
       const studentVal = normalizeTF(studentSubAnswers[item.label]);
       const standardVal = normalizeTF(item.correctAnswer);
-      if (studentVal && standardVal && studentVal === standardVal) {
-        correctSubItems++;
+
+      if (studentVal) {
+        qAnsweredSubs++;
+        if (standardVal && studentVal === standardVal) {
+          subItemsCorrectCount++;
+          qCorrectSubs++;
+        } else {
+          subItemsIncorrectCount++;
+        }
+      } else {
+        subItemsUnansweredCount++;
       }
     });
 
     let factor = 0;
-    if (correctSubItems === 1) factor = 0.10;
-    else if (correctSubItems === 2) factor = 0.25;
-    else if (correctSubItems === 3) factor = 0.50;
-    else if (correctSubItems === 4) factor = 1.00;
+    if (qCorrectSubs === 1) factor = 0.10;
+    else if (qCorrectSubs === 2) factor = 0.25;
+    else if (qCorrectSubs === 3) factor = 0.50;
+    else if (qCorrectSubs === 4) factor = 1.00;
 
     const questionScore = p2WeightPerQ * factor;
     part2Score += questionScore;
 
-    if (correctSubItems === 4) {
+    let status: QuestionResultStatus = 'UNANSWERED';
+    if (qCorrectSubs === q.items.length) {
+      status = 'CORRECT';
       p2FullCorrect++;
-    } else if (correctSubItems > 0) {
+    } else if (qCorrectSubs > 0) {
+      status = 'PARTIAL';
       p2PartialCorrect++;
+    } else if (qAnsweredSubs > 0) {
+      status = 'INCORRECT';
+    } else {
+      status = 'UNANSWERED';
     }
+
+    questionDetails[q.id] = {
+      score: Math.round(questionScore * 100) / 100,
+      maxScore: Math.round(p2WeightPerQ * 100) / 100,
+      status,
+      correctSubCount: qCorrectSubs,
+      totalSubCount: q.items.length
+    };
   });
 
   // Part III Points (Trả lời ngắn)
@@ -155,12 +199,20 @@ export function gradeExam(
 
   p3Questions.forEach((q) => {
     const studentText = answers[q.id]?.shortAnswerText || '';
-    if (q.shortAnswer && studentText) {
-      if (isShortAnswerCorrect(studentText, q.shortAnswer)) {
-        part3Score += p3WeightPerQ;
-        p3Correct++;
-      }
+    const isAnswered = studentText.trim().length > 0;
+    const isCorrect = isAnswered && !!q.shortAnswer && isShortAnswerCorrect(studentText, q.shortAnswer);
+    const qScore = isCorrect ? p3WeightPerQ : 0;
+
+    if (isCorrect) {
+      part3Score += p3WeightPerQ;
+      p3Correct++;
     }
+
+    questionDetails[q.id] = {
+      score: Math.round(qScore * 100) / 100,
+      maxScore: Math.round(p3WeightPerQ * 100) / 100,
+      status: isCorrect ? 'CORRECT' : (isAnswered ? 'INCORRECT' : 'UNANSWERED')
+    };
   });
 
   // Calculate totals and round to 2 decimals
@@ -171,24 +223,22 @@ export function gradeExam(
   let totalScore = Math.round((part1Score + part2Score + part3Score) * 100) / 100;
   totalScore = Math.min(10.0, Math.max(0, totalScore));
 
-  const totalQuestions = exam.questions.length;
   const correctCount = p1Correct + p2FullCorrect + p3Correct;
   const partialCount = p2PartialCorrect;
 
-  // Unanswered count
+  // Question counts by status
   let unansweredCount = 0;
-  exam.questions.forEach((q) => {
-    const ans = answers[q.id];
-    if (!ans) {
-      unansweredCount++;
-      return;
-    }
-    if (q.part === 'PART_I' && !ans.selectedOption) unansweredCount++;
-    else if (q.part === 'PART_II' && (!ans.subItems || Object.keys(ans.subItems).length === 0)) unansweredCount++;
-    else if (q.part === 'PART_III' && (!ans.shortAnswerText || ans.shortAnswerText.trim() === '')) unansweredCount++;
-  });
+  let incorrectCount = 0;
 
-  const incorrectCount = totalQuestions - correctCount - partialCount - unansweredCount;
+  exam.questions.forEach((q) => {
+    const d = questionDetails[q.id];
+    if (d) {
+      if (d.status === 'UNANSWERED') unansweredCount++;
+      else if (d.status === 'INCORRECT') incorrectCount++;
+    } else {
+      unansweredCount++;
+    }
+  });
 
   // By Cognitive Level Breakdown
   const levels: CognitiveLevel[] = ['NHAN_BIET', 'THONG_HIEU', 'VAN_DUNG', 'VAN_DUNG_CAO'];
@@ -203,53 +253,26 @@ export function gradeExam(
     const lvl = q.level || 'THONG_HIEU';
     byLevel[lvl].total++;
 
-    let weight = 0;
-    let earned = 0;
-    let isFull = false;
+    const d = questionDetails[q.id];
+    const earned = d?.score || 0;
+    const max = d?.maxScore || 0;
 
-    if (q.part === 'PART_I') {
-      weight = p1WeightPerQ;
-      if (answers[q.id]?.selectedOption?.toUpperCase() === q.correctOption?.toUpperCase()) {
-        earned = weight;
-        isFull = true;
-      }
-    } else if (q.part === 'PART_II') {
-      weight = p2WeightPerQ;
-      const sub = answers[q.id]?.subItems || {};
-      let c = 0;
-      q.items?.forEach((it) => {
-        const sVal = normalizeTF(sub[it.label]);
-        const aVal = normalizeTF(it.correctAnswer);
-        if (sVal && aVal && sVal === aVal) c++;
-      });
-      let factor = 0;
-      if (c === 1) factor = 0.1;
-      else if (c === 2) factor = 0.25;
-      else if (c === 3) factor = 0.5;
-      else if (c === 4) factor = 1.0;
-      earned = weight * factor;
-      if (c === 4) isFull = true;
-    } else {
-      weight = p3WeightPerQ;
-      if (isShortAnswerCorrect(answers[q.id]?.shortAnswerText || '', q.shortAnswer || '')) {
-        earned = weight;
-        isFull = true;
-      }
-    }
-
-    byLevel[lvl].maxScore = Math.round((byLevel[lvl].maxScore + weight) * 100) / 100;
+    byLevel[lvl].maxScore = Math.round((byLevel[lvl].maxScore + max) * 100) / 100;
     byLevel[lvl].score = Math.round((byLevel[lvl].score + earned) * 100) / 100;
-    if (isFull) byLevel[lvl].correct++;
+    if (d?.status === 'CORRECT') {
+      byLevel[lvl].correct++;
+    }
   });
 
-  const unlockedExplanation = totalScore >= (exam.minScoreForExplanation ?? 0);
+  // Default to allowing full explanation view after exam submission
+  const unlockedExplanation = true;
 
   return {
     id: `res-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
     examId: exam.id,
     examTitle: exam.title,
     studentName: studentName || 'Học sinh',
-    studentClass: studentClass || '11A',
+    studentClass: studentClass || '',
     startedAt,
     submittedAt: new Date().toISOString(),
     timeSpentSeconds,
@@ -263,6 +286,11 @@ export function gradeExam(
     partialCount,
     incorrectCount,
     unansweredCount,
+    subItemsTotalCount,
+    subItemsCorrectCount,
+    subItemsIncorrectCount,
+    subItemsUnansweredCount,
+    questionDetails,
     unlockedExplanation,
     byLevel
   };

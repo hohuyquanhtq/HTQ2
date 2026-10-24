@@ -144,7 +144,12 @@ export interface ExamResult {
   partialCount: number;
   incorrectCount: number;
   unansweredCount: number;
-  unlockedExplanation: boolean;
+  subItemsTotalCount?: number;
+  subItemsCorrectCount?: number;
+  subItemsIncorrectCount?: number;
+  subItemsUnansweredCount?: number;
+  questionDetails?: Record<string, QuestionGradingDetail>;
+  unlockedExplanation?: boolean;
   byLevel: {
     [key in CognitiveLevel]: {
       total: number;
@@ -153,6 +158,16 @@ export interface ExamResult {
       maxScore: number;
     };
   };
+}
+
+export type QuestionResultStatus = 'CORRECT' | 'PARTIAL' | 'INCORRECT' | 'UNANSWERED';
+
+export interface QuestionGradingDetail {
+  score: number;
+  maxScore: number;
+  status: QuestionResultStatus;
+  correctSubCount?: number;
+  totalSubCount?: number;
 }
 
 export const COGNITIVE_LEVEL_LABELS: Record<CognitiveLevel, string> = {

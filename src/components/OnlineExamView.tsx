@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Exam, StudentAnswers, ExamResult, UserSession } from '../types';
+import { Exam, StudentAnswers, ExamResult, UserSession, Question } from '../types';
 import { gradeExam } from '../utils/gradingEngine';
 import MathView from './MathView';
 import { 
@@ -12,7 +12,12 @@ import {
   ChevronRight, 
   Lock, 
   User,
-  GraduationCap
+  GraduationCap,
+  Flag,
+  Check,
+  AlertCircle,
+  HelpCircle,
+  BookOpen
 } from 'lucide-react';
 
 interface OnlineExamViewProps {
@@ -21,6 +26,8 @@ interface OnlineExamViewProps {
   onFinishExam: (result: ExamResult) => void;
   onExitExam: () => void;
 }
+
+export type QuestionAnswerStatus = 'ANSWERED' | 'PARTIAL' | 'UNANSWERED';
 
 export const OnlineExamView: React.FC<OnlineExamViewProps> = ({
   exam,
@@ -56,10 +63,15 @@ export const OnlineExamView: React.FC<OnlineExamViewProps> = ({
     }
   });
 
-  const [activeQuestionId, setActiveQuestionId] = useState<string>(
-    exam.questions[0]?.id || ''
-  );
+  // Current Question Index (Single question at a time)
+  const [currentIndex, setCurrentIndex] = useState<number>(0);
+
+  // Flagged/Bookmarked question IDs for review
+  const [flaggedIds, setFlaggedIds] = useState<Set<string>>(new Set());
+
+  // Submit Modal & Autosave Time
   const [isSubmitModalOpen, setIsSubmitModalOpen] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [lastSavedTime, setLastSavedTime] = useState<string>('Vừa lưu');
 
   // Auto-save to localStorage on answer change
@@ -83,7 +95,6 @@ export const OnlineExamView: React.FC<OnlineExamViewProps> = ({
       setSecondsRemaining((prev) => {
         if (prev <= 1) {
           clearInterval(timer);
-          // Auto submit on time expiry!
           handleSubmitExam(true);
           return 0;
         }
@@ -94,10 +105,58 @@ export const OnlineExamView: React.FC<OnlineExamViewProps> = ({
     return () => clearInterval(timer);
   }, [isTimerRunning]);
 
+  // Current Question object
+  const currentQuestion: Question | undefined = exam.questions[currentIndex];
+
+  // Helper to determine the precise answer status of a question:
+  // - 'ANSWERED': Fully completed according to question type rules
+  // - 'PARTIAL': Answered only some statements for True/False
+  // - 'UNANSWERED': No valid answer entered
+  const getQuestionStatus = (q: Question): QuestionAnswerStatus => {
+    const ans = answers[q.id];
+    if (!ans) return 'UNANSWERED';
+
+    if (q.part === 'PART_I') {
+      return ans.selectedOption ? 'ANSWERED' : 'UNANSWERED';
+    }
+
+    if (q.part === 'PART_II') {
+      const subItems = ans.subItems || {};
+      const answeredCount = Object.keys(subItems).length;
+      const totalItems = q.items ? q.items.length : 4;
+      if (answeredCount === totalItems && totalItems > 0) return 'ANSWERED';
+      if (answeredCount > 0) return 'PARTIAL';
+      return 'UNANSWERED';
+    }
+
+    if (q.part === 'PART_III') {
+      return (ans.shortAnswerText && ans.shortAnswerText.trim() !== '') ? 'ANSWERED' : 'UNANSWERED';
+    }
+
+    return 'UNANSWERED';
+  };
+
+  // Toggle flag / bookmark on a question
+  const toggleFlagQuestion = (qId: string) => {
+    setFlaggedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(qId)) {
+        next.delete(qId);
+      } else {
+        next.add(qId);
+      }
+      return next;
+    });
+  };
+
   // Submit Handler
   const handleSubmitExam = (isAuto: boolean = false) => {
+    if (isSubmitting) return;
+    setIsSubmitting(true);
+    setIsTimerRunning(false);
     setIsSubmitModalOpen(false);
-    const timeSpent = totalSeconds - secondsRemaining;
+
+    const timeSpent = Math.max(1, totalSeconds - secondsRemaining);
     const result = gradeExam(
       exam,
       studentName,
@@ -113,7 +172,10 @@ export const OnlineExamView: React.FC<OnlineExamViewProps> = ({
     }
 
     // Clear active test answers from storage
-    localStorage.removeItem(storageKey);
+    try {
+      localStorage.removeItem(storageKey);
+    } catch {}
+
     onFinishExam(result);
   };
 
@@ -157,8 +219,7 @@ export const OnlineExamView: React.FC<OnlineExamViewProps> = ({
   };
 
   const handleShortAnswerChange = (qId: string, val: string) => {
-    // Limit to max 4 chars by default according to official GDPT 2018 format
-    const trimmed = val.slice(0, 6);
+    const trimmed = val.slice(0, 10);
     setAnswers((prev) => ({
       ...prev,
       [qId]: {
@@ -175,51 +236,43 @@ export const OnlineExamView: React.FC<OnlineExamViewProps> = ({
   const isTimeUrgent = secondsRemaining < 300; // < 5 mins
   const isTimeCritical = secondsRemaining < 60; // < 1 min
 
-  // Calculate answered count
+  // Computed Answer Statistics
   const answeredStats = useMemo(() => {
-    let answered = 0;
-    exam.questions.forEach((q) => {
-      const ans = answers[q.id];
-      if (!ans) return;
-      if (q.part === 'PART_I' && ans.selectedOption) answered++;
-      else if (q.part === 'PART_II') {
-        // Complete if all items have answers
-        const answeredItems = Object.keys(ans.subItems || {}).length;
-        if (answeredItems > 0) answered++;
-      } else if (q.part === 'PART_III' && ans.shortAnswerText?.trim()) {
-        answered++;
+    let fullyAnswered = 0;
+    let partiallyAnswered = 0;
+    let unanswered = 0;
+
+    const unansweredList: number[] = [];
+    const partialList: number[] = [];
+
+    exam.questions.forEach((q, idx) => {
+      const st = getQuestionStatus(q);
+      if (st === 'ANSWERED') {
+        fullyAnswered++;
+      } else if (st === 'PARTIAL') {
+        partiallyAnswered++;
+        partialList.push(idx + 1);
+      } else {
+        unanswered++;
+        unansweredList.push(idx + 1);
       }
     });
+
     return {
-      answered,
-      unanswered: exam.questions.length - answered,
-      total: exam.questions.length
+      fullyAnswered,
+      partiallyAnswered,
+      unanswered,
+      total: exam.questions.length,
+      unansweredList,
+      partialList,
+      percentDone: Math.round(((fullyAnswered + partiallyAnswered * 0.5) / exam.questions.length) * 100)
     };
   }, [answers, exam.questions]);
-
-  // List of question numbers that are currently unanswered
-  const unansweredIndices = useMemo(() => {
-    const list: number[] = [];
-    exam.questions.forEach((q, idx) => {
-      const ans = answers[q.id];
-      if (!ans) {
-        list.push(idx + 1);
-        return;
-      }
-      if (q.part === 'PART_I' && !ans.selectedOption) list.push(idx + 1);
-      else if (q.part === 'PART_II' && (!ans.subItems || Object.keys(ans.subItems).length === 0)) list.push(idx + 1);
-      else if (q.part === 'PART_III' && (!ans.shortAnswerText || ans.shortAnswerText.trim() === '')) list.push(idx + 1);
-    });
-    return list;
-  }, [answers, exam.questions]);
-
-  // Jump to next/prev
-  const currentIndex = exam.questions.findIndex((q) => q.id === activeQuestionId);
 
   // If locked by passcode
   if (!isPasscodeUnlocked) {
     return (
-      <div className="max-w-md mx-auto my-16 bg-white p-8 rounded-2xl border border-slate-200 shadow-xl space-y-6 text-center">
+      <div className="max-w-md mx-auto my-16 bg-white p-8 rounded-2xl border border-slate-200 shadow-xl space-y-6 text-center animate-in fade-in duration-200">
         <div className="w-14 h-14 rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center mx-auto">
           <Lock className="w-7 h-7" />
         </div>
@@ -237,7 +290,7 @@ export const OnlineExamView: React.FC<OnlineExamViewProps> = ({
               value={enteredPasscode}
               onChange={(e) => setEnteredPasscode(e.target.value)}
               placeholder="Nhập mật khẩu đề thi..."
-              className="w-full px-4 py-2.5 text-center text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+              className="w-full px-4 py-2.5 text-center text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20 font-semibold"
               autoFocus
             />
             {passcodeError && (
@@ -251,13 +304,13 @@ export const OnlineExamView: React.FC<OnlineExamViewProps> = ({
             <button
               type="button"
               onClick={onExitExam}
-              className="w-1/2 py-2.5 text-xs font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-xl"
+              className="w-1/2 py-2.5 text-xs font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-xl cursor-pointer"
             >
               Quay lại
             </button>
             <button
               type="submit"
-              className="w-1/2 py-2.5 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 rounded-xl shadow-sm"
+              className="w-1/2 py-2.5 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 rounded-xl shadow-sm cursor-pointer"
             >
               Mở khóa & Bắt đầu
             </button>
@@ -267,35 +320,47 @@ export const OnlineExamView: React.FC<OnlineExamViewProps> = ({
     );
   }
 
+  // Active question answers
+  const activeAnswer = currentQuestion ? answers[currentQuestion.id] : undefined;
+  const isCurrentFlagged = currentQuestion ? flaggedIds.has(currentQuestion.id) : false;
+  const currentStatus = currentQuestion ? getQuestionStatus(currentQuestion) : 'UNANSWERED';
+
   return (
-    <div className="space-y-6">
-      {/* Top Floating Exam Control Strip */}
-      <div className="sticky top-16 z-30 bg-white/95 backdrop-blur-md border border-slate-200 rounded-2xl p-4 shadow-sm">
+    <div className="max-w-6xl mx-auto space-y-5 pb-16">
+      {/* ===================== A. PHẦN ĐẦU TRANG (TOP BAR) ===================== */}
+      <div className="sticky top-16 z-30 bg-white/95 backdrop-blur-md border border-slate-200 rounded-2xl p-4 shadow-sm space-y-3">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
           {/* Exam info & Student name */}
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center shrink-0">
-              <GraduationCap className="w-5 h-5" />
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-11 h-11 rounded-xl bg-indigo-600 text-white flex items-center justify-center shrink-0 shadow-xs">
+              <GraduationCap className="w-6 h-6" />
             </div>
-            <div>
-              <h2 className="text-sm font-bold text-slate-900 line-clamp-1">{exam.title}</h2>
-              <div className="flex items-center gap-2 text-xs text-slate-500 mt-0.5">
-                <span className="font-semibold text-slate-700">{studentName} ({studentClass})</span>
+            <div className="min-w-0">
+              <h2 className="text-sm sm:text-base font-bold text-slate-900 truncate" title={exam.title}>
+                {exam.title}
+              </h2>
+              <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 mt-0.5">
+                <span className="font-semibold text-slate-800 flex items-center gap-1">
+                  <User className="w-3.5 h-3.5 text-indigo-600" />
+                  {studentName} ({studentClass})
+                </span>
                 <span aria-hidden="true">·</span>
-                <span>{exam.questions.length} câu</span>
-                <span aria-hidden="true">·</span>
-                <span className="flex items-center gap-1 text-slate-400">
-                  <Save className="w-3 h-3 text-emerald-600" /> Tự động lưu: {lastSavedTime}
+                <span className="font-bold text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded border border-indigo-200">
+                  Câu {currentIndex + 1} / {exam.questions.length}
+                </span>
+                <span aria-hidden="true" className="hidden sm:inline">·</span>
+                <span className="hidden sm:inline-flex items-center gap-1 text-slate-400">
+                  <Save className="w-3 h-3 text-emerald-600" /> Tự lưu: {lastSavedTime}
                 </span>
               </div>
             </div>
           </div>
 
-          {/* Timer & Submit CTA */}
-          <div className="flex items-center justify-between md:justify-end gap-4 shrink-0">
-            {/* Countdown Badge */}
+          {/* Countdown Timer & Submit CTA */}
+          <div className="flex items-center justify-between md:justify-end gap-3 shrink-0">
+            {/* Timer Badge */}
             <div
-              className={`flex items-center gap-2 px-4 py-2 rounded-xl font-mono font-bold text-sm tabular-nums border transition-colors ${
+              className={`flex items-center gap-2 px-3.5 py-2 rounded-xl font-mono font-bold text-sm sm:text-base tabular-nums border transition-colors ${
                 isTimeCritical
                   ? 'bg-rose-50 text-rose-700 border-rose-300 animate-pulse'
                   : isTimeUrgent
@@ -307,174 +372,205 @@ export const OnlineExamView: React.FC<OnlineExamViewProps> = ({
               <span>{timeFormatted}</span>
             </div>
 
-            {/* Submit Button */}
+            {/* Quick Submit CTA */}
             <button
+              type="button"
               onClick={() => setIsSubmitModalOpen(true)}
-              className="flex items-center gap-1.5 px-5 py-2 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-xl shadow-sm transition-colors cursor-pointer"
+              className="flex items-center gap-2 px-4 py-2 sm:px-5 sm:py-2 text-xs sm:text-sm font-bold text-white bg-emerald-600 hover:bg-emerald-700 active:scale-95 rounded-xl shadow-sm transition-all cursor-pointer"
             >
-              <Send className="w-3.5 h-3.5" />
+              <Send className="w-4 h-4" />
               <span>Nộp bài thi</span>
             </button>
           </div>
         </div>
 
-        {/* Linear Progress of Time Remaining */}
-        <div className="w-full bg-slate-100 rounded-full h-1 mt-3 overflow-hidden">
-          <div
-            className={`h-full transition-all duration-1000 ${
-              isTimeCritical ? 'bg-rose-600' : isTimeUrgent ? 'bg-amber-500' : 'bg-indigo-600'
-            }`}
-            style={{ width: `${(secondsRemaining / totalSeconds) * 100}%` }}
-          />
+        {/* Linear Progress Bar of Exam Completion */}
+        <div className="space-y-1">
+          <div className="flex items-center justify-between text-[11px] text-slate-500 font-medium">
+            <span>Tiến độ hoàn thành: {answeredStats.fullyAnswered}/{answeredStats.total} câu ({answeredStats.percentDone}%)</span>
+            {answeredStats.partiallyAnswered > 0 && (
+              <span className="text-amber-700 font-semibold">{answeredStats.partiallyAnswered} câu làm một phần</span>
+            )}
+          </div>
+          <div className="w-full bg-slate-100 rounded-full h-1.5 overflow-hidden">
+            <div
+              className="h-full bg-gradient-to-r from-indigo-500 to-emerald-500 transition-all duration-300"
+              style={{ width: `${answeredStats.percentDone}%` }}
+            />
+          </div>
         </div>
       </div>
 
-      {/* Main Examination Split Layout */}
+      {/* ===================== MAIN LAYOUT ===================== */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-        {/* Left Column: Question Sheet (8 cols) */}
-        <div className="lg:col-span-8 space-y-6">
-          {exam.questions.map((q, idx) => {
-            const isCurrent = q.id === activeQuestionId;
-            const qAnswer = answers[q.id];
-
-            return (
-              <div
-                key={q.id}
-                id={`q-anchor-${q.id}`}
-                className={`bg-white rounded-2xl border transition-all p-6 ${
-                  isCurrent
-                    ? 'border-indigo-500 ring-2 ring-indigo-500/10 shadow-md'
-                    : 'border-slate-200 shadow-xs'
-                }`}
-                onClick={() => setActiveQuestionId(q.id)}
-              >
-                {/* Header */}
-                <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-                  <div className="flex items-center gap-2.5">
-                    <span className="w-8 h-8 rounded-lg bg-indigo-600 text-white font-bold text-sm flex items-center justify-center tabular-nums">
-                      {idx + 1}
-                    </span>
-                    <div className="text-xs text-slate-500">
-                      <span className="font-semibold text-slate-900">
-                        {q.part === 'PART_I'
-                          ? 'Phần I: 4 Lựa chọn'
-                          : q.part === 'PART_II'
-                          ? 'Phần II: Đúng / Sai'
+        {/* ===================== B. VÙNG NỘI DUNG CHÍNH (SINGLE QUESTION VIEW - 8 cols) ===================== */}
+        <div className="lg:col-span-8 space-y-4">
+          {currentQuestion ? (
+            <div className="bg-white rounded-2xl border-2 border-indigo-100 shadow-sm p-6 sm:p-8 space-y-6 transition-all">
+              {/* Question Header & Flag Toggle */}
+              <div className="flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-slate-100">
+                <div className="flex items-center gap-3">
+                  <span className="w-10 h-10 rounded-xl bg-indigo-600 text-white font-extrabold text-base flex items-center justify-center tabular-nums shadow-xs">
+                    {currentIndex + 1}
+                  </span>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className={`px-2.5 py-0.5 rounded-md font-bold text-xs border ${
+                        currentQuestion.part === 'PART_I'
+                          ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
+                          : currentQuestion.part === 'PART_II'
+                          ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                          : 'bg-amber-50 text-amber-700 border-amber-200'
+                      }`}>
+                        {currentQuestion.part === 'PART_I'
+                          ? 'Phần I: Trắc nghiệm 4 lựa chọn'
+                          : currentQuestion.part === 'PART_II'
+                          ? 'Phần II: Đúng / Sai (4 phát biểu a, b, c, d)'
                           : 'Phần III: Trả lời ngắn'}
                       </span>
-                      <span className="mx-1.5" aria-hidden="true">·</span>
-                      <span className="font-bold text-slate-800 bg-slate-100 px-1.5 py-0.5 rounded text-[11px]">
-                        {q.customLevelTag || `[${q.level}]`}
+                      <span className="font-bold text-slate-700 bg-slate-100 px-2 py-0.5 rounded text-xs">
+                        {currentQuestion.customLevelTag || `[${currentQuestion.level}]`}
                       </span>
-                      {q.chapter && (
-                        <>
-                          <span className="mx-1.5" aria-hidden="true">·</span>
-                          <span>{q.chapter}</span>
-                        </>
-                      )}
                     </div>
+                    {currentQuestion.chapter && (
+                      <div className="text-xs text-slate-500 mt-0.5">
+                        {currentQuestion.chapter}
+                      </div>
+                    )}
                   </div>
                 </div>
 
-                {/* Prompt */}
-                <div className="py-4 text-base text-slate-900 leading-relaxed font-normal">
-                  <MathView content={q.content} />
+                {/* Bookmark / Flag Button */}
+                <button
+                  type="button"
+                  onClick={() => toggleFlagQuestion(currentQuestion.id)}
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-xl border transition-all cursor-pointer ${
+                    isCurrentFlagged
+                      ? 'bg-amber-50 text-amber-800 border-amber-300 shadow-xs ring-1 ring-amber-300'
+                      : 'bg-slate-50 hover:bg-slate-100 text-slate-600 border-slate-200'
+                  }`}
+                  title={isCurrentFlagged ? 'Bỏ đánh dấu xem lại' : 'Đánh dấu câu này để xem lại sau'}
+                >
+                  <Flag className={`w-3.5 h-3.5 ${isCurrentFlagged ? 'fill-amber-500 text-amber-600' : 'text-slate-400'}`} />
+                  <span>{isCurrentFlagged ? 'Đã đánh dấu xem lại' : 'Đánh dấu xem lại'}</span>
+                </button>
+              </div>
+
+              {/* Question Prompt (Large, Clear, Responsive Typography) */}
+              <div className="text-base sm:text-lg text-slate-900 leading-relaxed font-normal py-2 select-text break-words">
+                <MathView content={currentQuestion.content} />
+              </div>
+
+              {/* Embedded Diagrams / Images if present */}
+              {currentQuestion.images && currentQuestion.images.length > 0 && (
+                <div className="flex flex-wrap gap-3 py-2">
+                  {currentQuestion.images.map((imgSrc, imgIdx) => (
+                    <img
+                      key={imgIdx}
+                      src={imgSrc}
+                      alt="Hình vẽ minh họa câu hỏi"
+                      className="max-h-72 max-w-full rounded-xl border border-slate-200 object-contain bg-white shadow-xs p-1"
+                    />
+                  ))}
                 </div>
+              )}
 
-                {/* Embedded Images / Diagrams */}
-                {q.images && q.images.length > 0 && (
-                  <div className="flex flex-wrap gap-3 pb-3">
-                    {q.images.map((imgSrc, imgIdx) => (
-                      <img
-                        key={imgIdx}
-                        src={imgSrc}
-                        alt="Hình vẽ minh họa đề thi"
-                        className="max-h-60 max-w-full rounded-lg border border-slate-200 object-contain bg-white shadow-xs"
-                      />
-                    ))}
+              {/* Interactive Answer Input based on Type */}
+
+              {/* DẠNG 1: Trắc nghiệm A, B, C, D */}
+              {currentQuestion.part === 'PART_I' && currentQuestion.options && (
+                <div className="space-y-3 pt-2">
+                  <div className="text-xs font-bold text-slate-500 uppercase tracking-wider">
+                    Chọn một phương án đúng nhất:
                   </div>
-                )}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {currentQuestion.options.map((opt) => {
+                      const isSelected = activeAnswer?.selectedOption === opt.label;
 
-                {/* Interactive Answer Input based on Type */}
-
-                {/* Part I: A, B, C, D */}
-                {q.part === 'PART_I' && q.options && (
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2">
-                    {q.options.map((opt) => {
-                      const isSelected = qAnswer?.selectedOption === opt.label;
                       return (
                         <button
                           key={opt.label}
                           type="button"
-                          onClick={() => handleSelectOption(q.id, opt.label)}
-                          className={`p-3.5 rounded-xl border text-left flex items-start gap-3 transition-all cursor-pointer ${
+                          onClick={() => handleSelectOption(currentQuestion.id, opt.label)}
+                          className={`p-4 rounded-xl border-2 text-left flex items-start gap-3.5 transition-all cursor-pointer ${
                             isSelected
-                              ? 'bg-indigo-50/80 border-indigo-500 text-indigo-950 font-medium ring-1 ring-indigo-500 shadow-xs'
-                              : 'bg-slate-50/50 hover:bg-slate-100/70 border-slate-200 text-slate-800'
+                              ? 'bg-indigo-50/90 border-indigo-600 text-indigo-950 font-medium ring-2 ring-indigo-500/20 shadow-xs'
+                              : 'bg-slate-50/70 hover:bg-slate-100/90 border-slate-200 text-slate-800'
                           }`}
                         >
                           <span
-                            className={`w-6 h-6 rounded-md flex items-center justify-center text-xs font-bold shrink-0 transition-colors ${
+                            className={`w-7 h-7 rounded-lg flex items-center justify-center text-xs font-bold shrink-0 transition-colors ${
                               isSelected
-                                ? 'bg-indigo-600 text-white'
+                                ? 'bg-indigo-600 text-white shadow-xs'
                                 : 'bg-white border border-slate-300 text-slate-700'
                             }`}
                           >
                             {opt.label}
                           </span>
-                          <div className="flex-1 text-sm pt-0.5">
+                          <div className="flex-1 text-sm sm:text-base pt-0.5">
                             <MathView content={opt.content} />
                           </div>
+                          {isSelected && (
+                            <CheckCircle2 className="w-5 h-5 text-indigo-600 shrink-0 mt-0.5" />
+                          )}
                         </button>
                       );
                     })}
                   </div>
-                )}
+                </div>
+              )}
 
-                {/* Part II: a, b, c, d True/False Toggles */}
-                {q.part === 'PART_II' && q.items && (
-                  <div className="space-y-3 pt-2">
-                    <div className="text-xs font-medium text-slate-500 italic mb-1">
-                      Chọn Đúng (Đ) hoặc Sai (S) cho từng nhận định dưới đây:
-                    </div>
-                    {q.items.map((item) => {
-                      const currentVal = qAnswer?.subItems?.[item.label];
+              {/* DẠNG 2: Đúng / Sai 4 phát biểu a, b, c, d */}
+              {currentQuestion.part === 'PART_II' && currentQuestion.items && (
+                <div className="space-y-3 pt-2">
+                  <div className="text-xs font-bold text-slate-500 uppercase tracking-wider">
+                    Chọn Đúng hoặc Sai cho từng phát biểu dưới đây:
+                  </div>
+                  <div className="space-y-2.5">
+                    {currentQuestion.items.map((item) => {
+                      const currentVal = activeAnswer?.subItems?.[item.label];
                       const isTrue = currentVal === 'D';
                       const isFalse = currentVal === 'S';
 
                       return (
                         <div
                           key={item.label}
-                          className="p-3.5 bg-slate-50/70 rounded-xl border border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-sm"
+                          className={`p-4 rounded-xl border transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-sm sm:text-base ${
+                            isTrue
+                              ? 'bg-emerald-50/40 border-emerald-300'
+                              : isFalse
+                              ? 'bg-rose-50/40 border-rose-300'
+                              : 'bg-slate-50/70 border-slate-200'
+                          }`}
                         >
-                          <div className="flex items-start gap-2.5 flex-1">
-                            <span className="font-bold text-slate-900 text-xs shrink-0 mt-0.5">
+                          <div className="flex items-start gap-3 flex-1 min-w-0">
+                            <span className="font-extrabold text-slate-900 shrink-0 w-6 text-sm sm:text-base">
                               {item.label})
                             </span>
-                            <div className="text-slate-800 text-sm">
+                            <div className="flex-1 text-slate-800">
                               <MathView content={item.content} />
                             </div>
                           </div>
 
-                          <div className="flex items-center gap-2 self-end sm:self-center shrink-0">
+                          <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
                             <button
                               type="button"
-                              onClick={() => handleSelectTrueFalse(q.id, item.label, 'D')}
-                              className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                              onClick={() => handleSelectTrueFalse(currentQuestion.id, item.label, 'D')}
+                              className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-bold border transition-all cursor-pointer ${
                                 isTrue
-                                  ? 'bg-emerald-600 text-white shadow-xs'
-                                  : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-100'
+                                  ? 'bg-emerald-600 border-emerald-600 text-white shadow-xs'
+                                  : 'bg-white hover:bg-emerald-50 border-slate-300 text-slate-700'
                               }`}
                             >
                               Đúng (Đ)
                             </button>
                             <button
                               type="button"
-                              onClick={() => handleSelectTrueFalse(q.id, item.label, 'S')}
-                              className={`px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                              onClick={() => handleSelectTrueFalse(currentQuestion.id, item.label, 'S')}
+                              className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-bold border transition-all cursor-pointer ${
                                 isFalse
-                                  ? 'bg-rose-600 text-white shadow-xs'
-                                  : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-100'
+                                  ? 'bg-rose-600 border-rose-600 text-white shadow-xs'
+                                  : 'bg-white hover:bg-rose-50 border-slate-300 text-slate-700'
                               }`}
                             >
                               Sai (S)
@@ -484,207 +580,214 @@ export const OnlineExamView: React.FC<OnlineExamViewProps> = ({
                       );
                     })}
                   </div>
-                )}
+                </div>
+              )}
 
-                {/* Part III: Short Answer Numeric/String Input */}
-                {q.part === 'PART_III' && (
-                  <div className="pt-2">
-                    <div className="p-4 bg-amber-50/50 rounded-xl border border-amber-200 space-y-2">
-                      <div className="text-xs font-semibold text-amber-900">
-                        Nhập đáp số (tối đa 4 ký tự, dùng dấu phẩy hoặc chấm cho số thập phân):
-                      </div>
-                      <div className="flex items-center gap-3">
-                        <input
-                          type="text"
-                          maxLength={6}
-                          value={qAnswer?.shortAnswerText || ''}
-                          onChange={(e) => handleShortAnswerChange(q.id, e.target.value)}
-                          placeholder="VD: 2,5"
-                          className="w-48 px-4 py-2 text-base font-mono font-bold bg-white border border-amber-300 rounded-lg text-slate-900 focus:outline-none focus:ring-2 focus:ring-amber-500/20"
-                        />
-                        <span className="text-xs text-slate-400">
-                          ({qAnswer?.shortAnswerText?.length || 0}/4 ký tự)
-                        </span>
-                      </div>
+              {/* DẠNG 3: Trả lời ngắn */}
+              {currentQuestion.part === 'PART_III' && (
+                <div className="space-y-3 pt-3">
+                  <div className="text-xs font-bold text-slate-500 uppercase tracking-wider">
+                    Nhập câu trả lời ngắn dưới dạng số hoặc số thập phân:
+                  </div>
+                  <div className="p-4 bg-amber-50/60 rounded-xl border border-amber-200 space-y-2">
+                    <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+                      <input
+                        type="text"
+                        value={activeAnswer?.shortAnswerText || ''}
+                        onChange={(e) => handleShortAnswerChange(currentQuestion.id, e.target.value)}
+                        placeholder="VD: 0,5 hoặc 12"
+                        className="w-full sm:w-64 px-4 py-3 text-lg font-mono font-bold bg-white border-2 border-amber-300 rounded-xl text-slate-900 focus:outline-none focus:border-indigo-600 focus:ring-4 focus:ring-indigo-100"
+                        autoFocus
+                      />
+                      <span className="text-xs text-slate-500">
+                        Hỗ trợ số nguyên, số thập phân (dùng dấu phẩy hoặc dấu chấm: ví dụ 0,5 hoặc 0.5)
+                      </span>
                     </div>
                   </div>
+                </div>
+              )}
+
+              {/* ===================== C. ĐIỀU HƯỚNG TỪNG CÂU (BOTTOM NAVIGATION) ===================== */}
+              <div className="pt-6 border-t border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <button
+                  type="button"
+                  disabled={currentIndex === 0}
+                  onClick={() => setCurrentIndex((prev) => Math.max(0, prev - 1))}
+                  className={`inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl text-xs sm:text-sm font-bold border transition-all cursor-pointer ${
+                    currentIndex === 0
+                      ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed opacity-60'
+                      : 'bg-white hover:bg-slate-50 text-slate-700 border-slate-300 shadow-xs'
+                  }`}
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                  <span>Câu trước</span>
+                </button>
+
+                {/* Status Indicator for Current Question */}
+                <div className="text-center text-xs font-semibold">
+                  {currentStatus === 'ANSWERED' && (
+                    <span className="text-emerald-700 flex items-center justify-center gap-1.5">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                      <span>Đã hoàn thành câu này</span>
+                    </span>
+                  )}
+                  {currentStatus === 'PARTIAL' && (
+                    <span className="text-amber-700 flex items-center justify-center gap-1.5">
+                      <AlertCircle className="w-4 h-4 text-amber-600" />
+                      <span>Mới trả lời một phần</span>
+                    </span>
+                  )}
+                  {currentStatus === 'UNANSWERED' && (
+                    <span className="text-slate-500 flex items-center justify-center gap-1.5">
+                      <HelpCircle className="w-4 h-4 text-slate-400" />
+                      <span>Chưa có câu trả lời</span>
+                    </span>
+                  )}
+                </div>
+
+                {currentIndex < exam.questions.length - 1 ? (
+                  <button
+                    type="button"
+                    onClick={() => setCurrentIndex((prev) => Math.min(exam.questions.length - 1, prev + 1))}
+                    className="inline-flex items-center justify-center gap-2 px-6 py-2.5 rounded-xl text-xs sm:text-sm font-bold text-white bg-indigo-600 hover:bg-indigo-700 shadow-sm transition-all cursor-pointer"
+                  >
+                    <span>Câu tiếp theo</span>
+                    <ChevronRight className="w-4 h-4" />
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setIsSubmitModalOpen(true)}
+                    className="inline-flex items-center justify-center gap-2 px-6 py-2.5 rounded-xl text-xs sm:text-sm font-bold text-white bg-emerald-600 hover:bg-emerald-700 shadow-md transition-all cursor-pointer"
+                  >
+                    <span>Kiểm tra & Nộp bài</span>
+                    <Send className="w-4 h-4" />
+                  </button>
                 )}
               </div>
-            );
-          })}
+            </div>
+          ) : null}
         </div>
 
-        {/* Right Column: Sticky Bubble Sheet (4 cols) */}
-        <div className="lg:col-span-4 sticky top-36 space-y-4">
-          <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-4">
+        {/* ===================== THANH CHỌN CÂU HỎI (QUESTION PALETTE BAR - 4 cols) ===================== */}
+        <div className="lg:col-span-4 space-y-4 lg:sticky lg:top-36">
+          <div className="bg-white p-5 sm:p-6 rounded-2xl border border-slate-200 shadow-xs space-y-5">
+            {/* Palette Header */}
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-              <h3 className="text-sm font-bold text-slate-900">
-                Phiếu trả lời trắc nghiệm
-              </h3>
-              <div className="text-xs font-bold text-indigo-700 bg-indigo-50 px-2.5 py-1 rounded-md tabular-nums">
-                Đã làm: {answeredStats.answered} / {answeredStats.total}
+              <div>
+                <h3 className="text-sm font-bold text-slate-900">
+                  Bảng câu hỏi làm bài
+                </h3>
+                <p className="text-[11px] text-slate-500">
+                  Bấm vào số câu để chuyển trực tiếp
+                </p>
+              </div>
+              <span className="text-xs font-bold text-indigo-700 bg-indigo-50 px-2.5 py-1 rounded-lg border border-indigo-200">
+                {answeredStats.fullyAnswered}/{answeredStats.total} câu
+              </span>
+            </div>
+
+            {/* Questions Grid Palette */}
+            <div className="grid grid-cols-5 sm:grid-cols-6 lg:grid-cols-5 gap-2 max-h-[55vh] overflow-y-auto p-1">
+              {exam.questions.map((q, idx) => {
+                const status = getQuestionStatus(q);
+                const isCurrent = idx === currentIndex;
+                const isFlagged = flaggedIds.has(q.id);
+
+                return (
+                  <button
+                    key={q.id}
+                    type="button"
+                    onClick={() => setCurrentIndex(idx)}
+                    className={`relative h-11 rounded-xl text-xs font-extrabold transition-all flex items-center justify-center cursor-pointer border ${
+                      isCurrent
+                        ? 'ring-2 ring-indigo-600 ring-offset-2 border-indigo-600 scale-105 shadow-md z-10'
+                        : ''
+                    } ${
+                      status === 'ANSWERED'
+                        ? 'bg-emerald-600 text-white border-emerald-600 hover:bg-emerald-700 shadow-xs'
+                        : status === 'PARTIAL'
+                        ? 'bg-amber-100 text-amber-900 border-amber-400 hover:bg-amber-200'
+                        : 'bg-slate-100 text-slate-700 border-slate-200 hover:bg-slate-200'
+                    }`}
+                    title={`Câu ${idx + 1} (${
+                      status === 'ANSWERED'
+                        ? 'Đã làm'
+                        : status === 'PARTIAL'
+                        ? 'Làm một phần'
+                        : 'Chưa làm'
+                    }${isFlagged ? ' - Cần xem lại' : ''})`}
+                  >
+                    <span>{idx + 1}</span>
+
+                    {/* Partial badge dot */}
+                    {status === 'PARTIAL' && (
+                      <span className="absolute bottom-1 w-1.5 h-1.5 rounded-full bg-amber-600" />
+                    )}
+
+                    {/* Flagged icon/marker */}
+                    {isFlagged && (
+                      <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-amber-500 text-white flex items-center justify-center shadow-xs">
+                        <Flag className="w-2.5 h-2.5 fill-white" />
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Palette Legend (Chú giải trực quan) */}
+            <div className="pt-3 border-t border-slate-100 space-y-2 text-xs text-slate-600">
+              <div className="font-semibold text-slate-800 text-[11px] uppercase tracking-wider">
+                Chú giải trạng thái:
+              </div>
+              <div className="grid grid-cols-2 gap-2 text-[11px]">
+                <div className="flex items-center gap-2">
+                  <span className="w-3.5 h-3.5 rounded bg-emerald-600 shrink-0" />
+                  <span>Đã làm xong ({answeredStats.fullyAnswered})</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="w-3.5 h-3.5 rounded bg-amber-100 border border-amber-400 text-amber-900 shrink-0 flex items-center justify-center text-[9px] font-bold">½</span>
+                  <span>Làm một phần ({answeredStats.partiallyAnswered})</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="w-3.5 h-3.5 rounded bg-slate-100 border border-slate-300 shrink-0" />
+                  <span>Chưa làm ({answeredStats.unanswered})</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="w-3.5 h-3.5 rounded-full bg-amber-500 text-white flex items-center justify-center shrink-0">
+                    <Flag className="w-2 h-2 fill-white" />
+                  </span>
+                  <span>Cần xem lại ({flaggedIds.size})</span>
+                </div>
               </div>
             </div>
 
-            {/* Answer Grid by Question */}
-            <div className="space-y-4">
-              {/* Part I section in grid */}
-              {exam.questions.some((q) => q.part === 'PART_I') && (
-                <div>
-                  <div className="text-xs font-bold text-slate-600 mb-2">Phần I (Trắc nghiệm A-D)</div>
-                  <div className="grid grid-cols-4 gap-2">
-                    {exam.questions
-                      .filter((q) => q.part === 'PART_I')
-                      .map((q, idx) => {
-                        const isDone = !!answers[q.id]?.selectedOption;
-                        const isCurrent = q.id === activeQuestionId;
-
-                        return (
-                          <button
-                            key={q.id}
-                            type="button"
-                            onClick={() => {
-                              setActiveQuestionId(q.id);
-                              document.getElementById(`q-anchor-${q.id}`)?.scrollIntoView({ behavior: 'smooth' });
-                            }}
-                            className={`py-2 px-1 text-xs font-bold rounded-lg border transition-all flex flex-col items-center justify-center gap-0.5 cursor-pointer ${
-                              isCurrent
-                                ? 'ring-2 ring-indigo-500 border-indigo-500'
-                                : ''
-                            } ${
-                              isDone
-                                ? 'bg-indigo-600 text-white border-indigo-600'
-                                : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
-                            }`}
-                          >
-                            <span className="text-[10px] opacity-80">Câu {idx + 1}</span>
-                            <span>{answers[q.id]?.selectedOption || '—'}</span>
-                          </button>
-                        );
-                      })}
-                  </div>
-                </div>
-              )}
-
-              {/* Part II section in grid */}
-              {exam.questions.some((q) => q.part === 'PART_II') && (
-                <div className="pt-2">
-                  <div className="text-xs font-bold text-slate-600 mb-2">Phần II (Đúng / Sai)</div>
-                  <div className="space-y-2">
-                    {exam.questions
-                      .filter((q) => q.part === 'PART_II')
-                      .map((q, idx) => {
-                        const sub = answers[q.id]?.subItems || {};
-                        const doneCount = Object.keys(sub).length;
-                        const isCurrent = q.id === activeQuestionId;
-
-                        return (
-                          <button
-                            key={q.id}
-                            type="button"
-                            onClick={() => {
-                              setActiveQuestionId(q.id);
-                              document.getElementById(`q-anchor-${q.id}`)?.scrollIntoView({ behavior: 'smooth' });
-                            }}
-                            className={`w-full p-2.5 rounded-lg border text-xs font-medium transition-all flex items-center justify-between cursor-pointer ${
-                              isCurrent ? 'ring-2 ring-indigo-500 border-indigo-500' : ''
-                            } ${
-                              doneCount === 4
-                                ? 'bg-emerald-50/70 border-emerald-300 text-emerald-950'
-                                : doneCount > 0
-                                ? 'bg-amber-50/70 border-amber-300 text-amber-950'
-                                : 'bg-slate-50 border-slate-200 text-slate-700'
-                            }`}
-                          >
-                            <span className="font-bold">Câu {idx + 1} (a,b,c,d)</span>
-                            <div className="flex items-center gap-1 font-mono text-xs">
-                              <span className={sub['a'] ? 'font-bold text-slate-900' : 'text-slate-300'}>a:{sub['a'] || '-'}</span>
-                              <span>·</span>
-                              <span className={sub['b'] ? 'font-bold text-slate-900' : 'text-slate-300'}>b:{sub['b'] || '-'}</span>
-                              <span>·</span>
-                              <span className={sub['c'] ? 'font-bold text-slate-900' : 'text-slate-300'}>c:{sub['c'] || '-'}</span>
-                              <span>·</span>
-                              <span className={sub['d'] ? 'font-bold text-slate-900' : 'text-slate-300'}>d:{sub['d'] || '-'}</span>
-                            </div>
-                          </button>
-                        );
-                      })}
-                  </div>
-                </div>
-              )}
-
-              {/* Part III section in grid */}
-              {exam.questions.some((q) => q.part === 'PART_III') && (
-                <div className="pt-2">
-                  <div className="text-xs font-bold text-slate-600 mb-2">Phần III (Trả lời ngắn)</div>
-                  <div className="grid grid-cols-2 gap-2">
-                    {exam.questions
-                      .filter((q) => q.part === 'PART_III')
-                      .map((q, idx) => {
-                        const val = answers[q.id]?.shortAnswerText;
-                        const isDone = !!val && val.trim() !== '';
-                        const isCurrent = q.id === activeQuestionId;
-
-                        return (
-                          <button
-                            key={q.id}
-                            type="button"
-                            onClick={() => {
-                              setActiveQuestionId(q.id);
-                              document.getElementById(`q-anchor-${q.id}`)?.scrollIntoView({ behavior: 'smooth' });
-                            }}
-                            className={`p-2 rounded-lg border text-xs transition-all flex flex-col items-center justify-center cursor-pointer ${
-                              isCurrent ? 'ring-2 ring-indigo-500 border-indigo-500' : ''
-                            } ${
-                              isDone
-                                ? 'bg-amber-500 text-white font-bold border-amber-600'
-                                : 'bg-slate-50 text-slate-700 border-slate-200'
-                            }`}
-                          >
-                            <span className="text-[10px] opacity-80">Câu {idx + 1}</span>
-                            <span className="font-mono truncate max-w-[80px]">{val || '—'}</span>
-                          </button>
-                        );
-                      })}
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* Legend */}
-            <div className="pt-3 border-t border-slate-100 flex items-center justify-around text-[11px] text-slate-500">
-              <div className="flex items-center gap-1.5">
-                <span className="w-2.5 h-2.5 rounded bg-indigo-600" />
-                <span>Đã trả lời</span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <span className="w-2.5 h-2.5 rounded bg-slate-200" />
-                <span>Chưa làm</span>
-              </div>
-            </div>
-
+            {/* Bottom Submit Button */}
             <button
+              type="button"
               onClick={() => setIsSubmitModalOpen(true)}
-              className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl shadow-sm transition-colors cursor-pointer"
+              className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white font-bold text-xs rounded-xl shadow-sm transition-all flex items-center justify-center gap-2 cursor-pointer"
             >
-              Nộp bài thi ngay
+              <Send className="w-4 h-4" />
+              <span>Nộp bài thi ngay</span>
             </button>
           </div>
         </div>
       </div>
 
-      {/* Submit Confirmation Modal */}
+      {/* ===================== SUBMIT CONFIRMATION MODAL ===================== */}
       {isSubmitModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-4">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-5">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center shrink-0">
-                <AlertTriangle className="w-5 h-5" />
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4 overflow-y-auto">
+          <div className="bg-white rounded-2xl max-w-lg w-full my-8 p-6 sm:p-7 shadow-2xl border border-slate-200 space-y-5 animate-in fade-in zoom-in duration-150">
+            <div className="flex items-start gap-3.5 border-b border-slate-100 pb-4">
+              <div className="w-11 h-11 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center shrink-0 shadow-xs">
+                <AlertTriangle className="w-6 h-6" />
               </div>
               <div>
                 <h3 className="text-base font-bold text-slate-900">Xác nhận nộp bài thi?</h3>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  Thời gian làm bài vẫn còn {timeFormatted}.
+                  Thời gian làm bài vẫn còn: <strong className="font-mono text-slate-800">{timeFormatted}</strong>
                 </p>
               </div>
             </div>
@@ -697,7 +800,7 @@ export const OnlineExamView: React.FC<OnlineExamViewProps> = ({
               </div>
               <div className="grid grid-cols-2 gap-2 text-xs">
                 <div>
-                  <label className="text-[11px] text-slate-500 mb-1 block">Họ và tên</label>
+                  <label className="text-[11px] text-slate-500 mb-1 block">Họ và tên thí sinh</label>
                   <input
                     type="text"
                     value={studentName}
@@ -719,57 +822,91 @@ export const OnlineExamView: React.FC<OnlineExamViewProps> = ({
               </div>
             </div>
 
-            {/* Completion Status */}
-            <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 space-y-2 text-xs">
+            {/* Completion Summary */}
+            <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 space-y-2 text-xs">
               <div className="flex items-center justify-between">
-                <span className="text-slate-600">Số câu đã trả lời:</span>
+                <span className="text-slate-600">Đã trả lời đầy đủ:</span>
                 <span className="font-bold text-emerald-700 tabular-nums">
-                  {answeredStats.answered} / {answeredStats.total} câu
+                  {answeredStats.fullyAnswered} / {answeredStats.total} câu
                 </span>
               </div>
+              {answeredStats.partiallyAnswered > 0 && (
+                <div className="flex items-center justify-between text-amber-700 font-semibold">
+                  <span>Mới làm một phần:</span>
+                  <span className="tabular-nums">{answeredStats.partiallyAnswered} câu</span>
+                </div>
+              )}
               {answeredStats.unanswered > 0 && (
                 <div className="flex items-center justify-between text-rose-700 font-semibold">
-                  <span>Số câu chưa trả lời:</span>
+                  <span>Chưa trả lời:</span>
                   <span className="tabular-nums">{answeredStats.unanswered} câu</span>
                 </div>
               )}
             </div>
 
-            {unansweredIndices.length > 0 && (
-              <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs space-y-1.5">
-                <div className="font-semibold text-rose-800">
-                  Các câu chưa làm ({unansweredIndices.length} câu):
+            {/* Unfinished Questions Warning Banner */}
+            {(answeredStats.unanswered > 0 || answeredStats.partiallyAnswered > 0) && (
+              <div className="p-3.5 bg-rose-50 border border-rose-200 rounded-xl text-xs space-y-2">
+                <div className="font-bold text-rose-900 flex items-center gap-1.5">
+                  <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+                  <span>
+                    Còn {answeredStats.unanswered + answeredStats.partiallyAnswered} câu chưa hoàn thành:
+                  </span>
                 </div>
-                <div className="text-rose-700 font-mono text-[11px] flex flex-wrap gap-1">
-                  {unansweredIndices.slice(0, 15).map((num) => (
-                    <span key={num} className="bg-rose-100 px-1.5 py-0.5 rounded font-bold">
+
+                <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto py-1">
+                  {answeredStats.unansweredList.map((num) => (
+                    <button
+                      key={num}
+                      type="button"
+                      onClick={() => {
+                        setCurrentIndex(num - 1);
+                        setIsSubmitModalOpen(false);
+                      }}
+                      className="px-2 py-0.5 rounded bg-rose-100 hover:bg-rose-200 text-rose-800 font-bold font-mono text-[11px] cursor-pointer"
+                      title="Bấm để chuyển ngay đến câu này"
+                    >
                       Câu {num}
-                    </span>
+                    </button>
                   ))}
-                  {unansweredIndices.length > 15 && (
-                    <span className="italic self-center">... và {unansweredIndices.length - 15} câu nữa</span>
-                  )}
+                  {answeredStats.partialList.map((num) => (
+                    <button
+                      key={num}
+                      type="button"
+                      onClick={() => {
+                        setCurrentIndex(num - 1);
+                        setIsSubmitModalOpen(false);
+                      }}
+                      className="px-2 py-0.5 rounded bg-amber-100 hover:bg-amber-200 text-amber-800 font-bold font-mono text-[11px] cursor-pointer"
+                      title="Bấm để chuyển ngay đến câu làm một phần này"
+                    >
+                      Câu {num} (½)
+                    </button>
+                  ))}
                 </div>
-                <p className="text-[11px] text-rose-600 pt-0.5 leading-relaxed">
-                  Điểm số các câu chưa làm sẽ được tính là 0 điểm. Bạn có chắc chắn muốn nộp bài ngay bây giờ?
+
+                <p className="text-[11px] text-rose-700 leading-relaxed">
+                  Các câu chưa làm sẽ nhận 0 điểm cho câu đó. Thầy/Cô và các bạn có chắc chắn muốn nộp bài ngay bây giờ?
                 </p>
               </div>
             )}
 
+            {/* Modal Actions */}
             <div className="flex items-center justify-end gap-3 pt-2">
               <button
                 type="button"
                 onClick={() => setIsSubmitModalOpen(false)}
-                className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-xl transition-colors cursor-pointer"
+                className="px-4 py-2.5 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-xl transition-colors cursor-pointer"
               >
-                Tiếp tục làm bài
+                Quay lại làm tiếp
               </button>
               <button
                 type="button"
+                disabled={isSubmitting}
                 onClick={() => handleSubmitExam(false)}
-                className="px-5 py-2 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-xl shadow-sm transition-colors cursor-pointer"
+                className="px-6 py-2.5 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed rounded-xl shadow-md transition-all cursor-pointer flex items-center gap-2"
               >
-                Xác nhận nộp bài
+                {isSubmitting ? 'Đang chấm điểm & nộp bài...' : 'Xác nhận nộp bài'}
               </button>
             </div>
           </div>

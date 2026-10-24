@@ -42,8 +42,10 @@ import {
   ChevronDown,
   ChevronUp,
   X,
-  Edit3
+  Edit3,
+  Download
 } from 'lucide-react';
+import { downloadEduChemWordSample } from '../utils/docxSampleGenerator';
 
 interface WordImportViewProps {
   onCommitQuestions: (newQuestions: Question[], mode: 'MERGE' | 'REPLACE') => void;
@@ -665,6 +667,35 @@ export const WordImportView: React.FC<WordImportViewProps> = ({
             </button>
           </div>
         </div>
+      </div>
+
+      {/* Download Word Sample Bar */}
+      <div className="bg-gradient-to-r from-emerald-50 via-teal-50 to-indigo-50 border border-emerald-200/80 rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-xs">
+        <div className="flex items-start sm:items-center gap-3.5">
+          <div className="w-11 h-11 rounded-xl bg-emerald-600 text-white flex items-center justify-center shrink-0 shadow-sm">
+            <Download className="w-5 h-5" />
+          </div>
+          <div>
+            <div className="text-sm font-bold text-slate-900 flex items-center gap-2">
+              <span>Tệp Word mẫu chuẩn GDPT 2018 (Đầy đủ 3 Dạng câu hỏi)</span>
+              <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-emerald-100 text-emerald-800 border border-emerald-300">
+                .DOCX HỢP LỆ
+              </span>
+            </div>
+            <p className="text-xs text-slate-600 mt-1">
+              Thầy cô tải file mẫu, thay nội dung câu hỏi và đáp án, sau đó nhập file Word vào EduChem Studio.
+            </p>
+          </div>
+        </div>
+
+        <button
+          type="button"
+          onClick={downloadEduChemWordSample}
+          className="inline-flex items-center justify-center gap-2 px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white font-bold text-xs rounded-xl shadow-sm transition-all shrink-0 cursor-pointer"
+        >
+          <Download className="w-4 h-4" />
+          <span>Tải file Word mẫu</span>
+        </button>
       </div>
 
       {/* Upload Zone */}

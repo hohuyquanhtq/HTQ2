@@ -25,8 +25,10 @@ import {
   ChevronDown,
   ChevronUp,
   Sliders,
-  Sparkles
+  Sparkles,
+  Download
 } from 'lucide-react';
+import { downloadEduChemWordSample } from '../utils/docxSampleGenerator';
 
 interface QuickExamBuilderViewProps {
   onPublishExam: (exam: Exam, snapshotQuestions: Question[]) => void;
@@ -447,6 +449,35 @@ export const QuickExamBuilderView: React.FC<QuickExamBuilderViewProps> = ({
               {file.name} ({(file.size / 1024).toFixed(1)} KB)
             </span>
           )}
+        </div>
+
+        {/* Download Word Sample Bar */}
+        <div className="bg-gradient-to-r from-emerald-50 via-teal-50 to-indigo-50 border border-emerald-200/80 rounded-xl p-3.5 sm:p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-lg bg-emerald-600 text-white flex items-center justify-center shrink-0 shadow-xs">
+              <Download className="w-4 h-4" />
+            </div>
+            <div>
+              <div className="text-xs sm:text-sm font-bold text-slate-900 flex items-center gap-2">
+                <span>Tệp Word mẫu chuẩn GDPT 2018</span>
+                <span className="px-2 py-0.2 rounded-full text-[10px] font-extrabold bg-emerald-100 text-emerald-800 border border-emerald-300">
+                  .DOCX HỢP LỆ
+                </span>
+              </div>
+              <p className="text-[11px] sm:text-xs text-slate-600 mt-0.5">
+                Thầy cô tải file mẫu, thay nội dung câu hỏi và đáp án, sau đó nhập file Word vào EduChem Studio.
+              </p>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={downloadEduChemWordSample}
+            className="inline-flex items-center justify-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white font-bold text-xs rounded-lg shadow-sm transition-all shrink-0 cursor-pointer"
+          >
+            <Download className="w-3.5 h-3.5" />
+            <span>Tải file Word mẫu</span>
+          </button>
         </div>
 
         <div

@@ -259,11 +259,17 @@ export function App() {
     saveResult(result);
     setExamResults(loadResults());
     setCurrentResult(result);
+    try {
+      localStorage.setItem('educhem_last_exam_result', JSON.stringify({ resultId: result.id, examId: result.examId }));
+    } catch {}
   };
 
   // Retake current exam
   const handleRetakeExam = () => {
     setCurrentResult(null);
+    try {
+      localStorage.removeItem('educhem_last_exam_result');
+    } catch {}
   };
 
   // Refresh entire data
@@ -362,7 +368,11 @@ export function App() {
                 result={currentResult}
                 exam={currentExam}
                 onRetakeExam={handleRetakeExam}
-                onBackToBank={() => setActiveTab('bank')}
+                onBackToBank={() => {
+                  setCurrentResult(null);
+                  setCurrentExam(null);
+                  setActiveTab('bank');
+                }}
               />
             ) : currentExam ? (
               <OnlineExamView

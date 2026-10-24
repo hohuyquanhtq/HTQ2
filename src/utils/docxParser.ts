@@ -679,6 +679,26 @@ export async function parseDocxFile(file: File): Promise<ParseResult> {
         continue;
       }
 
+      // Check if line is an answer header or answers block
+      if (/^Đáp\s+án/i.test(line.text)) {
+        // e.g. "Đáp án: a - Đúng, b - Sai, c - Đúng, d - Sai" or "Đáp án: a: Đ, b: S..."
+        const inlineAnsRegex = /([a-d])\s*[:.\-–—\)]\s*(Đúng|Sai|Đ|S)/gi;
+        let m: RegExpExecArray | null;
+        while ((m = inlineAnsRegex.exec(line.text)) !== null) {
+          const l = m[1].toLowerCase();
+          const v = /Đúng|Đ/i.test(m[2]) ? 'D' : 'S';
+          const existing = trueFalseStatements.find((s) => s.label === l);
+          if (existing) existing.correctAnswer = v;
+        }
+        continue;
+      }
+
+      // If line is explanation, skip statement appending
+      if (/^(?:Lời\s+giải|Hướng\s+dẫn\s+giải)/i.test(line.text)) {
+        currentTfIndex = -1;
+        continue;
+      }
+
       // Check single line statement: ^([a-d])(?![a-zA-Z0-9_])\s*[.):\-–—]\s*(.*)$
       const stmtMatch = line.text.match(/^([a-d])(?![a-zA-Z0-9_])\s*[.):\-–—]\s*(.*)$/i);
 
@@ -695,6 +715,18 @@ export async function parseDocxFile(file: File): Promise<ParseResult> {
         } else if (/\((?:Sai|S|False|F)\)|\[(?:Sai|S|False|F)\]/i.test(content)) {
           ans = 'S';
           content = content.replace(/\s*(?:\((?:Sai|S|False|F)\)|\[(?:Sai|S|False|F)\])/gi, '').trim();
+        }
+
+        // If statement label was already added, this is an answer declaration (e.g. "a) Đúng")
+        const existing = trueFalseStatements.find((s) => s.label === label);
+        if (existing) {
+          const cleanAns = content.toUpperCase().trim();
+          if (cleanAns.includes('ĐÚNG') || cleanAns.includes('Đ') || cleanAns === 'D' || cleanAns === 'T') {
+            existing.correctAnswer = 'D';
+          } else if (cleanAns.includes('SAI') || cleanAns.includes('S') || cleanAns === 'F') {
+            existing.correctAnswer = 'S';
+          }
+          continue;
         }
 
         trueFalseStatements.push({
